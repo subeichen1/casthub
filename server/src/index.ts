@@ -29,7 +29,8 @@ export function readConfigFile(dir: string): Partial<ServerConfig> {
   const configPath = path.join(dir, "config.json");
   let raw: string;
   try {
-    raw = fs.readFileSync(configPath, "utf8");
+    // 兼容 Windows 记事本/PowerShell 生成的 UTF-8 BOM
+    raw = fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, "");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ENOENT") {

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+release/
 server/media/*
 !server/media/.gitkeep
 *.log

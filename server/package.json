@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "e2e": "node scripts/e2e.mjs",
-    "desktop": "electron desktop/main.js"
+    "desktop": "electron desktop/main.js",
+    "dist": "electron-builder --win portable"
   },
   "dependencies": {
     "chardet": "^2.1.0",
@@ -24,5 +25,27 @@
     "electron-builder": "^24.13.3",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
+  },
+  "build": {
+    "appId": "io.casthub.app",
+    "productName": "CastHub",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "desktop/**/*",
+      "public/**/*",
+      "scripts/fake-tv.mjs",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "portable"
+      ],
+      "artifactName": "CastHub.exe"
+    }
   }
 }

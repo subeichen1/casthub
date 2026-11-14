@@ -80,6 +80,21 @@ casthub-mvp/
 
 > 本仓库开发环境没有 ffmpeg，未内置 ffmpeg 生成的测试片；请自行把视频放入媒体目录。开发时用的 `server/media/test.mp4` 是公开示例视频，仅用于本地 Range 门禁验证。
 
+## 桌面版（推荐）
+
+Windows 电脑直接双击 `CastHub.exe` 即可启动，免安装、可放 U 盘携带。首次运行请注意：
+
+1. Windows SmartScreen 会提示「Windows 已保护你的电脑」，点「更多信息」→「仍要运行」。
+2. Windows 防火墙弹窗（此时进程名是 `CastHub.exe`）必须点「允许访问」，否则电视端无法拉取视频流。
+3. 运行日志写在 exe 所在目录的 `casthub.log`，排查问题时请一并提供。
+4. 如需指定媒体目录或公网地址，可在 exe 同目录放 `config.json`，例如 `{"mediaDir":"D:\\Videos","publicBaseUrl":"http://192.168.1.5:9420"}`；环境变量优先级最高，其次是 `config.json`，最后是内置默认值。
+
+## 回退到网页版
+
+桌面版异常时关闭 exe，然后 `cd server && npm install && npm start`，浏览器开 `http://<PC局域网IP>:9420`，功能完全等价（DLNA 模式同样可用）。
+
+开发者可用 `git reset --hard pre-desktop` 回到无桌面层代码。
+
 ## 电视端 App 安装（TCL U 盘 sideload）
 
 APK 实际路径：
