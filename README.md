@@ -1,5 +1,30 @@
 # CastHub MVP
 
+CastHub 是一款开源的局域网投屏工具：把 PC 上的本地视频直接投到电视播放，无需数据线、无需上传云端。
+
+CastHub is an open-source LAN casting tool that streams local videos from your PC to Android TV over your home network.
+It solves the hassle of copying files or using USB drives — your TV plays videos directly from your PC.
+Get started with `cd server && npm install && npm start`, then open `http://<PC-IP>:9420` in a browser.
+
+## 功能特性
+
+- **投屏**：浏览器控制台浏览本地媒体库，一键投到电视；支持播放 / 暂停 / 拖动进度 / 停止。
+- **DLNA 降级**：电视无法安装 App 时，可驱动电视自带的 DLNA/UPnP 播放器（无字幕保证，mkv / avi 兼容性取决于电视）。
+- **Windows 桌面版**：双击 `CastHub.exe` 即开即用，免安装、可放 U 盘；支持同目录 `config.json` 配置媒体目录。
+- **字幕**：中枢支持 `.srt` / `.vtt` 字幕文件访问；显示效果取决于电视播放器（DLNA 模式不推送外挂字幕）。
+
+## 技术栈
+
+| 模块 | 技术栈 |
+| --- | --- |
+| `server/` 中枢 | Node.js 20 · TypeScript · Fastify · ws |
+| 浏览器控制台 | 原生 HTML / CSS / JavaScript（无构建） |
+| `tv-app/` 电视端 | Kotlin · Android TV · Media3 / ExoPlayer |
+| Windows 桌面版 | Electron · electron-builder（portable） |
+| 测试 | Node.js 脚本（fake-tv / fake-dlna + 端到端断言） |
+
+> **构建产物下载**：`CastHub.exe` 与 `app-debug.apk` 不随 git 仓库提供，请到本仓库的 **Releases** 页下载。
+
 局域网投屏工具：PC 上的 Node.js 中枢 + 安卓电视端 Kotlin App + 浏览器控制台。把本地视频从 PC 直接投到电视播放，控制台完成添加设备、浏览文件、投屏与播放控制。
 
 ## 架构
@@ -103,7 +128,7 @@ APK 实际路径：
 tv-app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-本仓库交付时已包含构建产物（6,437,094 字节，SHA-256 `87816EA91C276A63164A19E66A0676B60F95174C85AC26E16CA9A8689FBD0183`），可直接复制到 U 盘安装。如需重新构建，请在一台装有 Android Studio 的电脑上：
+构建产物不随 git 仓库分发，请到本仓库的 **Releases** 页下载 `app-debug.apk`（本地构建参考：6,437,094 字节，SHA-256 `87816EA91C276A63164A19E66A0676B60F95174C85AC26E16CA9A8689FBD0183`）。如需重新构建，请在一台装有 Android Studio 的电脑上：
 
 1. 用 Android Studio 打开 `tv-app` 目录，等待 Gradle Sync 完成（JDK 17，AGP 8.2，Kotlin 1.9）。
 2. 菜单 Build → Build App Bundle(s) / APK(s) → Build APK(s)。
@@ -201,3 +226,8 @@ curl 'http://127.0.0.1:9420/media/../package.json'   # 应返回 403
 - 无数据库、无转码、无多用户，状态存内存；中枢重启后设备列表清空。
 - 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 6 位码；DLNA 兼容模式作为降级路径见上节（不含 DLNA MediaServer）。
 - DTS 等电视不支持的音轨只能换片源，本项目不转码。
+
+## 许可证
+
+[MIT](LICENSE)
+
