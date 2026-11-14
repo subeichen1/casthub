@@ -220,6 +220,7 @@ curl 'http://127.0.0.1:9420/media/../package.json'   # 应返回 403
 - [BLOCKERS.md](BLOCKERS.md)：当前环境无法执行、需人工补充的事项
 - [DEVIATIONS.md](DEVIATIONS.md)：对锁定决策 / 依赖白名单的说明
 - [REPORT.md](REPORT.md)：最终验收报告（含各 Phase 门禁输出）
+- [PUBLISH.md](PUBLISH.md)：GitHub 发布手册（网页建仓 + Git 推送 + Release）
 
 ## 已知边界
 

@@ -23,3 +23,9 @@
 - 当前状态：SDK 与 AVD 已就绪，但模拟器因无硬件加速无法启动（见 Phase 3 条），无法在模拟器内点击控制台完成投屏链路。
 - 替代验证：已用桌面浏览器打开控制台，配合 `fake-tv.mjs` 走通「添加设备 → 浏览 → 投屏 → 暂停 → 拖进度 → 恢复」；WS 层同一流程由 `server/scripts/e2e.mjs` 自动断言。
 - 待人工：在具备硬件加速的 Android Studio + Android TV AVD 或真机上按 README「真机 / 模拟器验证清单」补跑模拟器路径。
+
+## Phase 8D — GitHub 推送（pending，需人工）
+
+- 本机未安装 GitHub CLI：`gh --version` 与 `gh auth status` 均为 `CommandNotFoundException`；`C:\Program Files\GitHub CLI\gh.exe` 与 `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe` 均不存在。
+- 本机也没有配置 GitHub 账号凭据，因此无法执行 `gh repo create ... --push`。
+- 已交付 `PUBLISH.md` 手工发布手册（网页建仓 + Git 推送 + Release 上传），按手册操作即可完成发布。
