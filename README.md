@@ -20,9 +20,10 @@ casthub-mvp/
 │   ├── src/index.ts         # 入口：读取 MEDIA_DIR / PUBLIC_BASE_URL
 │   ├── src/files.ts         # /api/files 浏览 + /media 流（Range）
 │   ├── src/devices.ts       # 设备注册 + 中枢→电视 WS 客户端（指数退避重连）
+│   ├── src/dlna.ts          # DLNA 发现、SOAP 控制与状态轮询（降级模式）
 │   ├── src/console-ws.ts    # 控制台 ↔ 中枢 WS
 │   ├── public/              # 控制台网页（原生 HTML/JS，无构建）
-│   └── scripts/             # fake-tv.mjs 电视模拟器 + e2e.mjs 集成测试
+│   └── scripts/             # fake-tv/e2e + fake-dlna/e2e-dlna
 └── tv-app/                  # Android TV App（Kotlin + Media3）
     └── app/src/main/java/io/casthub/tv/
         ├── MainActivity.kt  # 配对屏：本机 ws 地址 + 6 位配对码
@@ -75,6 +76,7 @@ casthub-mvp/
 - `MEDIA_DIR`：媒体根目录，默认 `server/media`。
 - `PUBLIC_BASE_URL`：覆盖下发给电视的媒体基址，例如 `http://192.168.1.5:9420`。默认按控制台连接请求的 Host 头自动推导，一般无需设置。
 - `PORT`：中枢端口，默认 9420。
+- `DLNA_SEED`：可选，逗号分隔的 `device.xml` URL；跳过 SSDP 直接注入 DLNA 设备（AP 隔离/多播不可达时使用）。
 
 > 本仓库开发环境没有 ffmpeg，未内置 ffmpeg 生成的测试片；请自行把视频放入媒体目录。开发时用的 `server/media/test.mp4` 是公开示例视频，仅用于本地 Range 门禁验证。
 
@@ -109,6 +111,37 @@ tv-app/app/build/outputs/apk/debug/app-debug.apk
 - [ ] 真机场景：电视与 PC 同网段，控制台用 PC 局域网 IP 打开，添加电视后投屏能出画面。
 - [ ] 遥控器：确认键播放/暂停，左右键 ±10 秒，返回键停止并回配对屏，播完自动回配对屏。
 
+## DLNA 兼容模式（降级）
+
+当电视装不了 CastHub App（老系统、酒店电视、朋友家电视等）但支持 DLNA/UPnP 渲染器时，中枢会降级为 UPnP 控制点，直接驱动电视自带的 DLNA 播放器。这是兜底路径，不是主线。
+
+### 何时用
+
+电视无法安装 CastHub App，或临时在没有 App 的电视上播放 PC 本地视频时使用。电视必须具备 DLNA/UPnP MediaRenderer（AVTransport）能力。
+
+### 限制清单
+
+- **无字幕保证**：DLNA 降级模式不推送外挂字幕，字幕能否显示取决于电视自身。
+- **拖动精度受电视影响**：进度条 seek 会转成电视的 AVTransport Seek，实际落点和响应速度由电视实现决定。
+- **无断点续播**：中枢不保存播放进度，重启或重新投屏从头开始。
+- **mkv / avi 可能不被电视接受**：部分电视 DLNA 渲染器只支持 mp4 等有限封装，mkv（video/x-matroska）/avi 会直接播放失败，这是已知边界，本项目不做转码补救。
+- **状态有最多数秒延迟**：中枢每 1s 轮询一次电视状态，界面显示可能比电视实际状态慢数秒。
+
+### 设备如何出现
+
+中枢启动时以及之后每 60 秒通过 SSDP M-SEARCH 自动发现同网段的 DLNA 渲染器，通常几秒内出现在控制台设备列表中，并带有「DLNA」徽章。也可以点设备面板的「刷新设备」立即重扫。DLNA 设备无需配对码，且不支持手动添加/移除。
+
+### 发现失败 / AP 隔离时用 DLNA_SEED 手动添加
+
+如果路由器开了 AP 隔离、禁用了多播，或 SSDP 一直收不到设备，可用 `DLNA_SEED` 直接注入电视的 `device.xml` 地址（多个地址用英文逗号分隔）：
+
+```powershell
+$env:DLNA_SEED = "http://192.168.1.8:49152/device.xml"
+npm start
+```
+
+`DLNA_SEED` 只是发现阶段的降级入口，设备仍按 DLNA 渲染器工作，限制清单同样适用。
+
 ## 常见问题排查
 
 1. **Windows 首次运行弹防火墙授权必须允许（端口 9420 入站）**。不允许的话，浏览器可能能打开控制台，但电视拉不到媒体流。
@@ -121,8 +154,9 @@ tv-app/app/build/outputs/apk/debug/app-debug.apk
 ```bash
 cd server
 npm install
-npm run build     # TypeScript 类型检查 + 编译到 dist/
-npm run e2e       # 启动 fake-tv + 中枢，跑完整投屏流程
+npm run build        # TypeScript 类型检查 + 编译到 dist/
+npm run e2e          # 启动 fake-tv + 中枢，跑完整 App 投屏流程
+node scripts/e2e-dlna.mjs   # 启动 fake-dlna + 中枢，跑 DLNA 降级流程
 ```
 
 单独运行电视模拟器：
@@ -150,5 +184,5 @@ curl 'http://127.0.0.1:9420/media/../package.json'   # 应返回 403
 ## 已知边界
 
 - 无数据库、无转码、无多用户，状态存内存；中枢重启后设备列表清空。
-- 不做 SSDP/mDNS/DLNA/二维码/屏幕镜像，配对靠手输地址 + 6 位码。
+- 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 6 位码；DLNA 兼容模式作为降级路径见上节（不含 DLNA MediaServer）。
 - DTS 等电视不支持的音轨只能换片源，本项目不转码。

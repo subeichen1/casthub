@@ -9,6 +9,7 @@
     currentPath: "",
     tvStatus: null,
     currentTitle: "",
+    castingDeviceId: null,
     ws: null,
     reconnectTimer: null,
     draggingSeek: false
@@ -19,7 +20,9 @@
     deviceAddress: document.getElementById("deviceAddress"),
     deviceToken: document.getElementById("deviceToken"),
     addDeviceBtn: document.getElementById("addDeviceBtn"),
+    refreshDevicesBtn: document.getElementById("refreshDevicesBtn"),
     deviceList: document.getElementById("deviceList"),
+    dlnaBanner: document.getElementById("dlnaBanner"),
     breadcrumb: document.getElementById("breadcrumb"),
     fileList: document.getElementById("fileList"),
     playerTitle: document.getElementById("playerTitle"),
@@ -89,8 +92,12 @@
         state.selectedDeviceId = firstOnline ? firstOnline.id : (state.devices[0] ? state.devices[0].id : null);
         state.tvStatus = null;
       }
+      if (state.castingDeviceId && !state.devices.some(function (d) { return d.id === state.castingDeviceId; })) {
+        state.castingDeviceId = null;
+      }
       renderDevices();
       renderControls();
+      updateDlnaBanner();
       if (state.files.length) renderFiles();
       return;
     }
@@ -113,18 +120,25 @@
     }
     els.deviceList.innerHTML = "";
     state.devices.forEach(function (device) {
+      const isDlna = device.type === "dlna";
       const row = document.createElement("div");
       row.className = "device" + (device.id === state.selectedDeviceId ? " active" : "");
+      const removeButton = isDlna
+        ? '<span>自动发现</span>'
+        : '<button class="danger" data-remove="' + device.id + '">移除</button>';
       row.innerHTML =
+        '<div><span class="badge ' + (isDlna ? "dlna" : "app") + '">' + (isDlna ? "DLNA" : "App") + '</span>' +
+        '<span class="name">' + escapeHtml(device.deviceName || (isDlna ? "DLNA 设备" : "电视")) + '</span></div>' +
         '<div class="addr">' + escapeHtml(device.address) + '</div>' +
         '<div class="meta"><span><span class="dot' + (device.online ? " online" : "") + '"></span>' +
-        (device.online ? "在线" : "离线") + '</span><button class="danger" data-remove="' + device.id + '">移除</button></div>';
+        (device.online ? "在线" : "离线") + '</span>' + removeButton + '</div>';
       row.addEventListener("click", function (event) {
         if (event.target && event.target.getAttribute("data-remove")) return;
         state.selectedDeviceId = device.id;
         state.tvStatus = null;
         renderDevices();
         renderControls();
+        updateDlnaBanner();
         renderFiles();
       });
       els.deviceList.appendChild(row);
@@ -135,6 +149,13 @@
         send({ type: "removeDevice", id: btn.getAttribute("data-remove") });
       });
     });
+  }
+
+  function updateDlnaBanner() {
+    const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
+    const casting = state.devices.find(function (d) { return d.id === state.castingDeviceId; });
+    const visible = !!((selected && selected.type === "dlna") || (casting && casting.type === "dlna"));
+    els.dlnaBanner.hidden = !visible;
   }
 
   function renderControls() {
@@ -170,7 +191,17 @@
     }
     els.positionText.textContent = formatTime(state.draggingSeek ? Number(els.seekSlider.value) : position);
     els.durationText.textContent = formatTime(duration);
-    if (state.currentTitle) els.playerTitle.textContent = state.currentTitle;
+    if (state.currentTitle) {
+      els.playerTitle.textContent = state.currentTitle;
+    } else if (tvState === "playing") {
+      els.playerTitle.textContent = "电视正在播放";
+    } else if (tvState === "paused") {
+      els.playerTitle.textContent = "电视已暂停";
+    } else if (tvState === "buffering") {
+      els.playerTitle.textContent = "电视缓冲中";
+    } else {
+      els.playerTitle.textContent = "未在播放";
+    }
   }
 
   function formatTime(ms) {
@@ -266,7 +297,10 @@
           }
           state.currentTitle = entry.name;
           els.playerTitle.textContent = entry.name;
-          send({ type: "cast", deviceId: state.selectedDeviceId, path: entry.path });
+          if (send({ type: "cast", deviceId: state.selectedDeviceId, path: entry.path })) {
+            state.castingDeviceId = state.selectedDeviceId;
+            updateDlnaBanner();
+          }
         });
         row.lastElementChild.appendChild(castBtn);
       }
@@ -293,7 +327,20 @@
 
   els.stopBtn.addEventListener("click", function () {
     if (!state.selectedDeviceId) return;
+    if (state.castingDeviceId === state.selectedDeviceId) {
+      state.castingDeviceId = null;
+      updateDlnaBanner();
+    }
     send({ type: "control", deviceId: state.selectedDeviceId, action: "stop" });
+  });
+
+  els.refreshDevicesBtn.addEventListener("click", function () {
+    if (!send({ type: "refreshDevices" })) return;
+    showToast("正在重新扫描 DLNA 设备…");
+    els.refreshDevicesBtn.disabled = true;
+    setTimeout(function () {
+      els.refreshDevicesBtn.disabled = false;
+    }, 6000);
   });
 
   els.seekSlider.addEventListener("pointerdown", function () {

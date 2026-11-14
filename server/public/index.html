@@ -148,6 +148,23 @@
     .conn-state { font-size: 12px; color: var(--muted); }
     .conn-state.ok { color: var(--green); }
     .conn-state.bad { color: var(--red); }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .panel-head h2 { margin: 0; }
+    button.small { padding: 5px 10px; font-size: 12px; }
+    .badge { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .badge.app { color: #93c5fd; background: #1e2a4a; }
+    .badge.dlna { color: #fcd34d; background: #3b2f14; }
+    .device .name { font-weight: 600; font-size: 13px; margin-left: 6px; }
+    .dlna-banner {
+      margin: 6px 24px 0;
+      padding: 10px 14px;
+      border: 1px solid #92400e;
+      border-radius: 10px;
+      background: #3b2f14;
+      color: #fde68a;
+      font-size: 13px;
+    }
+    .dlna-banner[hidden] { display: none; }
     @media (max-width: 1100px) {
       .layout { grid-template-columns: 1fr; }
       .file-list { max-height: 420px; }
@@ -161,9 +178,16 @@
     <span id="connState" class="conn-state">正在连接中枢…</span>
   </header>
 
+  <div id="dlnaBanner" class="dlna-banner" hidden>
+    ⚠ 降级模式（DLNA）：字幕、断点续播不可用，进度与拖动精度依赖电视实现
+  </div>
+
   <main class="layout">
     <section class="panel">
-      <h2>设备</h2>
+      <div class="panel-head">
+        <h2>设备</h2>
+        <button id="refreshDevicesBtn" class="secondary small">刷新设备</button>
+      </div>
       <div class="form-row">
         <input id="deviceAddress" type="text" placeholder="电视 WS 地址，如 ws://192.168.1.8:9417" />
       </div>
@@ -174,7 +198,7 @@
       <div id="deviceList" class="device-list">
         <div class="empty">尚未添加设备</div>
       </div>
-      <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6 位配对码，填入左侧即可。</div>
+      <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6 位配对码，填入上方即可。支持 DLNA 的电视会自动出现在列表中（DLNA 设备无需配对码，也不支持手动增删）。</div>
     </section>
 
     <section class="panel">
