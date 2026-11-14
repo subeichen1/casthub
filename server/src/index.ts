@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { attachConsoleWs } from "./console-ws";
 import { DeviceManager } from "./devices";
+import { DlnaService } from "./dlna";
 import { registerFileRoutes } from "./files";
 
 const PORT = Number(process.env.PORT ?? 9420);
@@ -17,9 +18,10 @@ async function main(): Promise<void> {
 
   const app = Fastify({ logger: true });
   const devices = new DeviceManager();
+  const dlna = new DlnaService();
 
   await registerFileRoutes(app, MEDIA_DIR);
-  attachConsoleWs(app, devices, MEDIA_DIR);
+  attachConsoleWs(app, devices, MEDIA_DIR, dlna);
 
   // 控制台静态页面（无构建步骤）
   app.get("/", async (_request, reply) => {
@@ -53,8 +55,10 @@ async function main(): Promise<void> {
 
   await app.listen({ port: PORT, host: HOST });
   app.log.info(`CastHub 已启动 http://${HOST}:${PORT}  MEDIA_DIR=${MEDIA_DIR}`);
+  dlna.start();
 
   const shutdown = async (): Promise<void> => {
+    dlna.dispose();
     devices.dispose();
     await app.close();
     process.exit(0);

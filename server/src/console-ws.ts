@@ -3,16 +3,24 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
 import { WebSocketServer, WebSocket } from "ws";
+import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
 import { mimeTypeOf, resolveWithin } from "./files";
 
 type ConsolePayload = Record<string, unknown>;
 
+const DLNA_MANUAL_ERROR = "DLNA 设备为自动发现，不支持手动增删";
+
 function sendJson(ws: WebSocket, payload: unknown): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
 }
 
-export function attachConsoleWs(app: FastifyInstance, devices: DeviceManager, mediaRoot: string): WebSocketServer {
+export function attachConsoleWs(
+  app: FastifyInstance,
+  devices: DeviceManager,
+  mediaRoot: string,
+  dlna: DlnaService
+): WebSocketServer {
   const wss = new WebSocketServer({ server: app.server, path: "/console" });
 
   const broadcast = (payload: unknown): void => {
@@ -22,16 +30,22 @@ export function attachConsoleWs(app: FastifyInstance, devices: DeviceManager, me
     }
   };
 
-  devices.onDevicesChanged = () => broadcast({ type: "devices", list: devices.list() });
+  const allDevices = () => [...devices.list(), ...dlna.list()];
+  const broadcastDevices = (): void => broadcast({ type: "devices", list: allDevices() });
+
+  devices.onDevicesChanged = broadcastDevices;
   devices.onTvStatus = (deviceId, status) => broadcast({ type: "tvStatus", deviceId, ...status });
   devices.onDeviceError = (_deviceId, message) => broadcast({ type: "error", message });
+  dlna.onDevicesChanged = broadcastDevices;
+  dlna.onTvStatus = (deviceId, status) => broadcast({ type: "tvStatus", deviceId, ...status });
+  dlna.onDeviceError = (_deviceId, message) => broadcast({ type: "error", message });
 
   wss.on("connection", (ws, req) => {
     const host = req.headers.host || "127.0.0.1:9420";
     const override = (process.env.PUBLIC_BASE_URL ?? "").trim();
     const baseUrl = (override || `http://${host}`).replace(/\/$/, "");
 
-    sendJson(ws, { type: "devices", list: devices.list() });
+    sendJson(ws, { type: "devices", list: allDevices() });
 
     ws.on("message", async (data) => {
       let msg: ConsolePayload;
@@ -47,14 +61,29 @@ export function attachConsoleWs(app: FastifyInstance, devices: DeviceManager, me
       try {
         switch (msg.type) {
           case "addDevice": {
-            const device = devices.add(String(msg.address ?? ""), String(msg.token ?? ""));
-            sendJson(ws, { type: "devices", list: devices.list() });
+            const address = String(msg.address ?? "");
+            if (dlna.findByAddress(address)) {
+              sendJson(ws, { type: "error", message: DLNA_MANUAL_ERROR });
+              break;
+            }
+            const device = devices.add(address, String(msg.token ?? ""));
+            broadcastDevices();
             console.log(`[console] 添加设备 ${device.address} (${device.id})`);
             break;
           }
           case "removeDevice": {
-            devices.remove(String(msg.id ?? ""));
-            sendJson(ws, { type: "devices", list: devices.list() });
+            const id = String(msg.id ?? "");
+            if (dlna.has(id)) {
+              sendJson(ws, { type: "error", message: DLNA_MANUAL_ERROR });
+              break;
+            }
+            devices.remove(id);
+            broadcastDevices();
+            break;
+          }
+          case "refreshDevices": {
+            await dlna.discover();
+            broadcastDevices();
             break;
           }
           case "cast": {
@@ -78,9 +107,18 @@ export function attachConsoleWs(app: FastifyInstance, devices: DeviceManager, me
             }
             const encodedPath = relPath.split("/").map((part) => encodeURIComponent(part)).join("/");
             const url = `${baseUrl}/media/${encodedPath}`;
-            const ok = devices.sendPlay(deviceId, url, path.basename(target), mimeTypeOf(target));
-            if (!ok) {
-              sendJson(ws, { type: "error", message: "设备不在线，无法投屏" });
+            const title = path.basename(target);
+            const mimeType = mimeTypeOf(target);
+            if (devices.has(deviceId)) {
+              const ok = devices.sendPlay(deviceId, url, title, mimeType);
+              if (!ok) {
+                sendJson(ws, { type: "error", message: "设备不在线，无法投屏" });
+                return;
+              }
+            } else if (dlna.has(deviceId)) {
+              await dlna.play(deviceId, url, title, mimeType);
+            } else {
+              sendJson(ws, { type: "error", message: "设备不存在" });
               return;
             }
             console.log(`[console] 投屏 ${relPath} -> ${deviceId}: ${url}`);
@@ -94,8 +132,15 @@ export function attachConsoleWs(app: FastifyInstance, devices: DeviceManager, me
               return;
             }
             const positionMs = msg.positionMs === undefined ? undefined : Number(msg.positionMs);
-            const ok = devices.control(deviceId, action as "pause" | "resume" | "stop" | "seek", positionMs);
-            if (!ok) sendJson(ws, { type: "error", message: "设备不在线或参数错误" });
+            if (devices.has(deviceId)) {
+              const ok = devices.control(deviceId, action as "pause" | "resume" | "stop" | "seek", positionMs);
+              if (!ok) sendJson(ws, { type: "error", message: "设备不在线或参数错误" });
+            } else if (dlna.has(deviceId)) {
+              const ok = await dlna.control(deviceId, action as "pause" | "resume" | "stop" | "seek", positionMs);
+              if (!ok) sendJson(ws, { type: "error", message: "设备不在线或参数错误" });
+            } else {
+              sendJson(ws, { type: "error", message: "设备不存在" });
+            }
             break;
           }
           default:

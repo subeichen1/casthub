@@ -10,6 +10,7 @@ interface Device {
   id: string;
   address: string;
   token: string;
+  deviceName: string;
   online: boolean;
   removed: boolean;
   fatalTokenError: boolean;
@@ -34,7 +35,13 @@ function normalizeAddress(input: string): string {
 }
 
 function toView(device: Device): DeviceView {
-  return { id: device.id, address: device.address, online: device.online };
+  return {
+    id: device.id,
+    address: device.address,
+    online: device.online,
+    type: "casthub",
+    deviceName: device.deviceName
+  };
 }
 
 export type ControlAction = "pause" | "resume" | "stop" | "seek";
@@ -72,6 +79,7 @@ export class DeviceManager {
       id: randomBytes(4).toString("hex"),
       address,
       token,
+      deviceName: "电视",
       online: false,
       removed: false,
       fatalTokenError: false,
@@ -208,6 +216,9 @@ export class DeviceManager {
     }
 
     if (msg.type === "helloAck") {
+      if (typeof msg.deviceName === "string" && msg.deviceName.trim()) {
+        device.deviceName = msg.deviceName.trim();
+      }
       if (msg.ok === true) {
         if (!device.online) {
           device.online = true;

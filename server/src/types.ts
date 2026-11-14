@@ -8,10 +8,14 @@ export interface MediaFileEntry {
   mimeType: string;
 }
 
+export type DeviceType = "casthub" | "dlna";
+
 export interface DeviceView {
   id: string;
   address: string;
   online: boolean;
+  type: DeviceType;
+  deviceName: string;
 }
 
 export type TvState = "idle" | "buffering" | "playing" | "paused" | "error";
