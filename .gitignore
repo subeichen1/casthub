@@ -9,6 +9,11 @@ console-token.txt
 .audit-*.json
 *.apk
 *.exe
+*.pfx
+*.p12
+*.jks
+*.keystore
+SIGNING-CREDENTIALS.txt
 .DS_Store
 tv-app/.gradle/
 tv-app/build/

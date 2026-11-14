@@ -47,9 +47,16 @@ jobs:
         shell: pwsh
         run: |
           $sig = Get-AuthenticodeSignature -LiteralPath 'server/release/CastHub.exe'
-          if ($sig.Status -ne 'Valid') {
+          if ($null -eq $sig.SignerCertificate) {
+            throw "CastHub.exe 未签名：$($sig.Status)"
+          }
+          if ($sig.Status -notin @('Valid', 'UnknownError')) {
             throw "CastHub.exe 签名无效：$($sig.Status)"
           }
+          if ($sig.SignerCertificate.Subject -notlike 'CN=CastHub Development*') {
+            throw "CastHub.exe 签名者不是开发签名证书：$($sig.SignerCertificate.Subject)"
+          }
+          Write-Host "签名状态：$($sig.Status)（开发自签名证书）"
           Write-Host "签名者：$($sig.SignerCertificate.Subject)"
       - name: Upload executable
         uses: actions/upload-artifact@v4
@@ -141,7 +148,11 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          name: CastHub v0.1.1（开发签名测试版）
+          body: |
+            ## CastHub v0.1.1 — 安全与可靠性修复
+
+            > 本次 Release 使用项目开发自签名证书构建，仅用于开发/测试。Windows 可能显示“未知发布者”，请核对 SHA-256；Android 使用独立的开发 keystore 签名。生产分发请替换为正式代码签名证书和 release keystore。
           files: |
             dist/CastHub.exe
             dist/CastHub-TV.apk
