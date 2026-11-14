@@ -145,6 +145,7 @@ curl 'http://127.0.0.1:9420/media/../package.json'   # 应返回 403
 - [PROTOCOL.md](PROTOCOL.md)：WS 协议与 REST 规范（实现唯一依据）
 - [BLOCKERS.md](BLOCKERS.md)：当前环境无法执行、需人工补充的事项
 - [DEVIATIONS.md](DEVIATIONS.md)：对锁定决策 / 依赖白名单的说明
+- [REPORT.md](REPORT.md)：最终验收报告（含各 Phase 门禁输出）
 
 ## 已知边界
 
