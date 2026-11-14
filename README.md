@@ -83,6 +83,30 @@ curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/instal
 
 从 [Releases](https://github.com/subeichen1/casthub/releases/latest) 下载 `app-debug.apk`，通过 U 盘安装到电视。详细步骤见 [电视端 App 安装](#电视端-app-安装tcl-u-盘-sideload)。
 
+### 方式五：AI Agent / 无人值守
+
+AI Agent、CI 或无图形环境建议使用“只安装、不启动、不创建快捷方式”的模式：
+
+**Windows（PowerShell）**
+
+```powershell
+$p = Join-Path $env:TEMP 'CastHub-install.ps1'; iwr -UseBasicParsing https://github.com/subeichen1/casthub/releases/latest/download/install.ps1 -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p -NoShortcuts -NoLaunch
+```
+
+默认安装到 `%LOCALAPPDATA%\CastHub`；需要指定路径时，在末尾追加 `-InstallDir "D:\Apps\CastHub" -MediaDir "D:\Videos\CastHub"`。需要启动时执行：
+
+```powershell
+Start-Process "$env:LOCALAPPDATA\CastHub\CastHub.exe" -WorkingDirectory "$env:LOCALAPPDATA\CastHub"
+```
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/install.sh | CASTHUB_NO_LAUNCH=1 bash
+```
+
+默认安装到 `~/.local/share/casthub`；把 `CASTHUB_NO_LAUNCH=1` 换成 `CASTHUB_DAEMON=1` 可在安装后后台启动，日志写入 `~/.local/share/casthub/casthub.log`。自定义路径时，在命令前加 `CASTHUB_DIR=/opt/casthub CASTHUB_MEDIA_DIR=/srv/videos`。
+
 ## 控制台界面
 
 控制台包含三个主要区域：
