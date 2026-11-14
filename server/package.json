@@ -45,7 +45,8 @@
       "target": [
         "portable"
       ],
-      "artifactName": "CastHub.exe"
+      "artifactName": "CastHub.exe",
+      "icon": "desktop/assets/icon.ico"
     }
   }
 }

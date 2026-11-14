@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const DEFAULT_PORT = 9420;
 const TV_PORT = 9417; // 电视端 WS 端口（CastHub 本身不监听，仅用于启动前冲突提示）
+const APP_ICON = path.join(__dirname, "assets", "icon.ico");
 
 let mainWindow = null;
 let serverHandle = null;
@@ -52,6 +53,7 @@ function createWindow() {
     width: 1280,
     height: 800,
     title: "CastHub",
+    icon: APP_ICON,
     backgroundColor: "#10161d",
     webPreferences: {
       nodeIntegration: false,
@@ -102,6 +104,10 @@ async function boot() {
         : `CastHub 启动失败：${error && error.message ? error.message : String(error)}`;
     showErrorPage(appRoot, message);
   }
+}
+
+if (process.platform === "win32") {
+  app.setAppUserModelId("io.casthub.app");
 }
 
 const gotLock = app.requestSingleInstanceLock();
