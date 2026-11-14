@@ -305,5 +305,5 @@ $ git log --oneline
 - 签名材料：生成 `CastHub-Dev-CodeSigning.pfx` / `.cer` 与 `casthub-release.keystore`（仓库外 `casthub-signing/`）；证书 Subject `CN=CastHub Development, O=CastHub, OU=Development, C=CN`，有效期至 2036-11-15；配置 6 个 GitHub Actions Secrets，密码未入库。
 - 发布工作流：`.github/workflows/release.yml` 支持开发自签名证书（验证 `SignerCertificate` 且 Subject 以 `CN=CastHub Development` 开头），Release 名称标注“开发签名测试版”。
 - Release：tag `v0.1.1`，release id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
-- Actions：Release workflow run id `43617653552`，windows / android / source / publish 四个 job 全部 `success`；Windows Authenticode 验证与 Android APK 签名验证步骤均通过。
+- Actions：Release workflow run id `43617653552`，windows / android / source / publish 四个 job 全部 `success`；Windows Authenticode 验证与 Android APK 签名验证步骤均通过。最终文档提交 `56fb9d9` 后的 CI run id `43618122110` 同样 `success`。
 

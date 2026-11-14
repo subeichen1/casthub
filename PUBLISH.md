@@ -2,7 +2,7 @@
 
 > **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
-> **v0.1.1 状态（2026-11-15）**：已使用开发自签名证书和开发 release keystore 完成正式构建。Release workflow run `43617653552` 的 windows / android / source / publish 四个 job 全部 `success`；Release <https://github.com/subeichen1/casthub/releases/tag/v0.1.1> 已发布 `CastHub.exe`、`CastHub-TV.apk`、`casthub-src.tar.gz` 与 `checksums.txt`。开发签名可能触发 Windows“未知发布者”提示，生产分发需替换正式证书。
+> **v0.1.1 状态（2026-11-15）**：已使用开发自签名证书和开发 release keystore 完成正式构建。Release workflow run `43617653552` 的 windows / android / source / publish 四个 job 全部 `success`；Release <https://github.com/subeichen1/casthub/releases/tag/v0.1.1> 已发布 `CastHub.exe`、`CastHub-TV.apk`、`casthub-src.tar.gz` 与 `checksums.txt`。文档提交后的 CI run `43618122110` 也为 `success`。开发签名可能触发 Windows“未知发布者”提示，生产分发需替换正式证书。
 >
 > 适用场景：本机没有安装 GitHub CLI（`gh`），或 `gh` 未登录 GitHub。本文按"网页建仓 + Git 命令行推送"的手工路径写成；仓库本身已经整理完毕（分支 `main`、历史保留、构建产物已排除出 git），照着做即可发布。
 >
@@ -94,7 +94,9 @@ git log origin/main -1 --oneline
    - CI 在 Ubuntu 上跑两条 e2e：`node scripts/e2e.mjs` 与 `node scripts/e2e-dlna.mjs`。
    - GitHub Actions 的容器网络通常限制多播，`e2e-dlna.mjs` 在 8 秒内发现不到 DLNA 设备时会自动改用 `DLNA_SEED` 重启中枢（脚本 `server/scripts/e2e-dlna.mjs` 第 201–214 行的降级分支），不会硬失败。若 CI 仍失败，请点进具体 job 查看日志。
 
-## 5. 创建 v0.1.1 Release（由 Release workflow 自动构建）
+## 5. v0.1.1 Release 记录（已由 Release workflow 自动完成）
+
+> 2026-11-15：tag `v0.1.1` 已创建，Release workflow run `43617653552` 已自动构建并发布。以下步骤保留为手工兜底参考。
 
 构建产物不进入 git 仓库（`.gitignore` 已排除 `*.exe`、`*.apk`、`server/release/` 等），请通过 GitHub Release 分发。
 
