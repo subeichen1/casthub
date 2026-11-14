@@ -1,6 +1,6 @@
 # CastHub GitHub 发布手册
 
-> **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`，Release `v0.1.0` 已上传 `CastHub.exe` 与 `app-debug.apk`。本文保留为发布流程参考。
+> **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`，Release `v0.1.0` 已上传 `CastHub.exe` 与 `app-debug.apk`。本文保留为发布流程参考。
 >
 > 适用场景：本机没有安装 GitHub CLI（`gh`），或 `gh` 未登录 GitHub。本文按"网页建仓 + Git 命令行推送"的手工路径写成；仓库本身已经整理完毕（分支 `main`、历史保留、构建产物已排除出 git），照着做即可发布。
 >

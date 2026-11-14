@@ -292,7 +292,7 @@ $ git log --oneline
 
 - 发布方式：使用已登录 GitHub 的浏览器（账号 `subeichen1`）创建 Public 仓库，再由本地 Git Credential Manager 完成 `git push -u origin main`；本机未安装 GitHub CLI（`gh` 为 CommandNotFoundException）。
 - 仓库：<https://github.com/subeichen1/casthub>
-- main HEAD：`80b89618f7a024440d46d9d7931a44a09c8711cf`（`80b8961 phase8E: LICENSE 版权人信息`）。
+- 发布时 main HEAD：`80b89618f7a024440d46d9d7931a44a09c8711cf`（`80b8961 phase8E: LICENSE 版权人信息`；后续文档提交会推进 main）。
 - GitHub Actions：workflow “CI” 第 1 次运行（run id `43594983377`）状态 `completed`、结论 `success`。
 - Release：`v0.1.0`（release id `445283603`），资产 `CastHub.exe`（70,267,632 字节）与 `app-debug.apk`（6,437,094 字节）；<https://github.com/subeichen1/casthub/releases/tag/v0.1.0>
 - 详细发布手册与状态见 `PUBLISH.md`；剩余人工验证事项见 `BLOCKERS.md`。

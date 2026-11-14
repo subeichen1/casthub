@@ -27,7 +27,7 @@
 ## Phase 8D — GitHub 推送（已完成，2026-11-14）
 
 - 初始环境未安装 GitHub CLI（`gh --version` 与 `gh auth status` 均为 `CommandNotFoundException`），也没有命令行 GitHub 凭据；实际改用已登录 GitHub 的 Edge 浏览器 + Git Credential Manager 完成发布。
-- 仓库：<https://github.com/subeichen1/casthub>（Public），main 分支 HEAD `80b89618f7a024440d46d9d7931a44a09c8711cf`（`80b8961 phase8E: LICENSE 版权人信息`）。
+- 仓库：<https://github.com/subeichen1/casthub>（Public），发布时 main HEAD `80b89618f7a024440d46d9d7931a44a09c8711cf`（`80b8961 phase8E: LICENSE 版权人信息`；后续文档提交会推进 main）。
 - CI：GitHub Actions workflow “CI” 第 1 次运行（run id `43594983377`）状态 `completed`、结论 `success`。
 - Release：`v0.1.0`（release id `445283603`），已上传 `CastHub.exe`（70,267,632 字节）与 `app-debug.apk`（6,437,094 字节）。
 - `PUBLISH.md` 保留为发布流程参考。
