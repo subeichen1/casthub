@@ -24,8 +24,10 @@
 - 替代验证：已用桌面浏览器打开控制台，配合 `fake-tv.mjs` 走通「添加设备 → 浏览 → 投屏 → 暂停 → 拖进度 → 恢复」；WS 层同一流程由 `server/scripts/e2e.mjs` 自动断言。
 - 待人工：在具备硬件加速的 Android Studio + Android TV AVD 或真机上按 README「真机 / 模拟器验证清单」补跑模拟器路径。
 
-## Phase 8D — GitHub 推送（pending，需人工）
+## Phase 8D — GitHub 推送（已完成，2026-11-14）
 
-- 本机未安装 GitHub CLI：`gh --version` 与 `gh auth status` 均为 `CommandNotFoundException`；`C:\Program Files\GitHub CLI\gh.exe` 与 `%LOCALAPPDATA%\Programs\GitHub CLI\gh.exe` 均不存在。
-- 本机也没有配置 GitHub 账号凭据，因此无法执行 `gh repo create ... --push`。
-- 已交付 `PUBLISH.md` 手工发布手册（网页建仓 + Git 推送 + Release 上传），按手册操作即可完成发布。
+- 初始环境未安装 GitHub CLI（`gh --version` 与 `gh auth status` 均为 `CommandNotFoundException`），也没有命令行 GitHub 凭据；实际改用已登录 GitHub 的 Edge 浏览器 + Git Credential Manager 完成发布。
+- 仓库：<https://github.com/subeichen1/casthub>（Public），main 分支 HEAD `80b89618f7a024440d46d9d7931a44a09c8711cf`（`80b8961 phase8E: LICENSE 版权人信息`）。
+- CI：GitHub Actions workflow “CI” 第 1 次运行（run id `43594983377`）状态 `completed`、结论 `success`。
+- Release：`v0.1.0`（release id `445283603`），已上传 `CastHub.exe`（70,267,632 字节）与 `app-debug.apk`（6,437,094 字节）。
+- `PUBLISH.md` 保留为发布流程参考。
