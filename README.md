@@ -106,7 +106,7 @@ PC 中枢基于 Node.js 20 + TypeScript + Fastify + ws，在 `9420` 端口同时
 ## 项目结构
 
 ```text
-casthub-mvp/
+casthub/
 ├── server/                  # Node.js 中枢
 │   ├── src/index.ts         # 入口：读取 MEDIA_DIR / PUBLIC_BASE_URL / config.json
 │   ├── src/files.ts         # /api/files 浏览 + /media 流（Range）

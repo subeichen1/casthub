@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # CastHub Linux / macOS 一键部署脚本
-# 用法：curl -fsSL https://raw.githubusercontent.com/subeichen1/casthub/main/scripts/install.sh | bash
+# 用法：curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/install.sh | bash
 # 可选环境变量：
 #   CASTHUB_DIR        安装目录，默认 ~/.local/share/casthub
 #   CASTHUB_MEDIA_DIR  媒体目录，默认 ~/Videos/CastHub
