@@ -229,13 +229,16 @@ README.md 已包含要求的四节：架构、从零运行、TCL U 盘 sideload�
 
 ```text
 $ git log --oneline
+39750bf docs: 补充非法 Range 验证记录
+96e0559 docs: 修正最终报告中的提交记录
+2290e48 docs: 添加最终验收报告与控制台实测截图
 1d24a64 chore: 补充 Gradle wrapper、APK 构建产物与环境验证记录
 814e79d phase(4): 控制台 UI 与中文 README
 7c4e68f phase(3): 电视端 Android TV App（构建待 Android SDK）
 917b98d phase(2): 设备管理、fake-tv 模拟器与 e2e 集成测试
 0f090bc phase(1): 中枢文件服务与 Range 支持
 615cbab phase(0): 初始化项目骨架与协议文档
-# 注：本报告文件的 docs 提交随后产生，最终提交号以仓库 git log 为准。
+# 注：本报告文件本次更新产生的 docs 提交随后出现，最终提交号以仓库 git log 为准。
 ```
 
 ## BLOCKERS.md
