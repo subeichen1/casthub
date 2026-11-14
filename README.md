@@ -86,7 +86,7 @@ APK 实际路径：
 tv-app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-如果该文件不存在（当前开发环境没有 Android SDK，未能构建），请在一台装有 Android Studio 的电脑上：
+本仓库交付时已包含构建产物（6,437,094 字节，SHA-256 `87816EA91C276A63164A19E66A0676B60F95174C85AC26E16CA9A8689FBD0183`），可直接复制到 U 盘安装。如需重新构建，请在一台装有 Android Studio 的电脑上：
 
 1. 用 Android Studio 打开 `tv-app` 目录，等待 Gradle Sync 完成（JDK 17，AGP 8.2，Kotlin 1.9）。
 2. 菜单 Build → Build App Bundle(s) / APK(s) → Build APK(s)。
@@ -99,7 +99,7 @@ tv-app/app/build/outputs/apk/debug/app-debug.apk
 3. 在电视上允许未知来源安装：设置 → 系统 → 安全 → 允许未知来源安装（不同 TCL 固件菜单名可能略有差异），然后安装。
 4. 打开「CastHub TV」应用，屏幕会显示本机 WebSocket 地址和 6 位配对码。
 
-## 真机验证清单（无 Android SDK 环境请按此逐条验证）
+## 真机 / 模拟器验证清单
 
 - [ ] Android Studio 能 Sync 并构建出 `tv-app/app/build/outputs/apk/debug/app-debug.apk`。
 - [ ] `adb install -r tv-app/app/build/outputs/apk/debug/app-debug.apk` 成功。
