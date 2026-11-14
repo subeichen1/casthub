@@ -48,7 +48,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 在 PowerShell 中运行：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing https://raw.githubusercontent.com/subeichen1/casthub/main/scripts/install.ps1 | iex"
+$p = Join-Path $env:TEMP 'CastHub-install.ps1'; iwr -UseBasicParsing https://github.com/subeichen1/casthub/releases/latest/download/install.ps1 -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
 ```
 
 安装脚本会自动完成以下步骤：
@@ -74,7 +74,7 @@ git clone --depth 1 https://github.com/subeichen1/casthub.git && cd casthub/serv
 ### 方式三：Linux / macOS 一键部署脚本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/subeichen1/casthub/main/scripts/install.sh | bash
+curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/install.sh | bash
 ```
 
 脚本会把 CastHub 部署到 `~/.local/share/casthub`，安装依赖并编译服务端，默认安装完成后直接启动；也可稍后手动执行 `~/.local/share/casthub/start-casthub.sh`。可通过环境变量 `CASTHUB_DIR`、`CASTHUB_MEDIA_DIR`、`CASTHUB_PORT` 覆盖默认路径和端口。

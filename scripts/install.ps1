@@ -5,7 +5,7 @@
     下载最新 Release 中的 CastHub.exe，安装到本地应用目录，创建快捷方式并启动。
     支持通过参数修改安装目录、媒体目录以及跳过启动。
 .EXAMPLE
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "iwr -UseBasicParsing https://raw.githubusercontent.com/subeichen1/casthub/main/scripts/install.ps1 | iex"
+    $p = Join-Path $env:TEMP 'CastHub-install.ps1'; iwr -UseBasicParsing https://github.com/subeichen1/casthub/releases/latest/download/install.ps1 -OutFile $p; powershell -NoProfile -ExecutionPolicy Bypass -File $p
 #>
 [CmdletBinding()]
 param(
