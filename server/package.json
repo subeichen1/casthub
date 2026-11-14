@@ -1,0 +1,23 @@
+{
+  "name": "casthub-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CastHub 局域网投屏中枢",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "chardet": "^2.1.0",
+    "fastify": "^4.28.1",
+    "iconv-lite": "^0.6.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3"
+  }
+}

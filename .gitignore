@@ -1,0 +1,11 @@
+node_modules/
+dist/
+server/media/*
+!server/media/.gitkeep
+*.log
+tv-app/.gradle/
+tv-app/build/
+tv-app/app/build/
+tv-app/local.properties
+.idea/
+*.iml
