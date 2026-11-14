@@ -5,7 +5,7 @@
   "description": "CastHub 局域网投屏中枢",
   "scripts": {
     "start": "tsx src/index.ts",
-    "build": "tsc",
+    "build": "tsc -p tsconfig.json",
     "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
