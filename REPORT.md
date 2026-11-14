@@ -77,6 +77,13 @@ Connection: keep-alive
 Keep-Alive: timeout=72
 
 {"error":"forbidden"}
+
+=== 4) 非法 Range（附加验证） ===
+$ curl -s -D - -o NUL -H "Range: bytes=99999999-" http://127.0.0.1:9420/media/test.mp4
+HTTP/1.1 416 Range Not Satisfiable
+content-range: bytes */1128375
+content-type: application/json; charset=utf-8
+content-length: 33
 ```
 
 说明：第一次测试片使用 MDN 公开示例 `flower.mp4`（1,128,375 bytes），因环境无 ffmpeg；已在 BLOCKERS.md 记录。
