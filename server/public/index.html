@@ -1,3 +1,207 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>CastHub 控制台</title></head>
-<body><p>控制台（Phase 4 实现）</p></body></html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CastHub 控制台</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111c2e;
+      --panel-2: #16233a;
+      --line: #243247;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --blue: #3b82f6;
+      --cyan: #22d3ee;
+      --green: #22c55e;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #16233a 0, var(--bg) 45%);
+      color: var(--text);
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      padding: 22px 28px 10px;
+    }
+    header h1 { margin: 0; font-size: 28px; color: var(--blue); letter-spacing: 0.5px; }
+    header .sub { color: var(--muted); font-size: 14px; }
+    .layout {
+      display: grid;
+      grid-template-columns: 330px minmax(420px, 1fr) 330px;
+      gap: 16px;
+      padding: 12px 24px 24px;
+      align-items: start;
+    }
+    .panel {
+      background: rgba(17, 28, 46, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+    }
+    .panel h2 { margin: 0 0 12px; font-size: 16px; color: #cbd5e1; font-weight: 600; }
+    .form-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      background: #0d1728;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--text);
+      padding: 9px 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    input:focus { border-color: var(--blue); }
+    button {
+      border: 0;
+      border-radius: 8px;
+      background: var(--blue);
+      color: white;
+      padding: 9px 14px;
+      font-size: 13px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { filter: brightness(1.1); }
+    button.secondary { background: #26364f; }
+    button.danger { background: #3b1d28; color: #fca5a5; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .device-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+    .device {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 10px;
+      padding: 10px 12px;
+      cursor: pointer;
+    }
+    .device.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+    .device .addr { font-family: Consolas, monospace; font-size: 13px; word-break: break-all; }
+    .device .meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; color: var(--muted); font-size: 12px; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--red); margin-right: 5px; }
+    .dot.online { background: var(--green); }
+    .empty { color: var(--muted); font-size: 13px; padding: 12px 0; text-align: center; }
+    .breadcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+    .breadcrumb a { color: var(--cyan); cursor: pointer; text-decoration: none; }
+    .file-list { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow: auto; }
+    .file-row {
+      display: grid;
+      grid-template-columns: 26px 1fr 90px 90px 74px;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 10px;
+      border-radius: 9px;
+      border: 1px solid transparent;
+      background: rgba(22, 35, 58, 0.55);
+      font-size: 13px;
+    }
+    .file-row:hover { border-color: var(--line); }
+    .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-row.dir .file-name { color: #93c5fd; cursor: pointer; }
+    .file-size { color: var(--muted); text-align: right; font-size: 12px; }
+    .file-mime { color: #64748b; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+    .player-title { font-size: 14px; color: var(--cyan); margin-bottom: 8px; min-height: 20px; }
+    .state-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #26364f;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 12px;
+    }
+    .state-badge.playing { color: #86efac; background: #143523; }
+    .state-badge.paused { color: #fde68a; background: #3b2f14; }
+    .state-badge.buffering { color: #93c5fd; background: #1e2a4a; }
+    .state-badge.error { color: #fca5a5; background: #3b1d28; }
+    .progress-wrap { margin: 14px 0 8px; }
+    input[type="range"] { width: 100%; accent-color: var(--blue); }
+    .time-row { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .controls { display: flex; gap: 8px; margin-top: 12px; }
+    .controls button { flex: 1; }
+    .hint { color: #64748b; font-size: 12px; line-height: 1.6; margin-top: 12px; }
+    #toast {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      max-width: 420px;
+      padding: 10px 14px;
+      border-radius: 9px;
+      background: #1f2937;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      font-size: 13px;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: all 0.2s ease;
+      pointer-events: none;
+    }
+    #toast.show { opacity: 1; transform: translateY(0); }
+    #toast.error { border-color: #7f1d1d; color: #fecaca; }
+    .conn-state { font-size: 12px; color: var(--muted); }
+    .conn-state.ok { color: var(--green); }
+    .conn-state.bad { color: var(--red); }
+    @media (max-width: 1100px) {
+      .layout { grid-template-columns: 1fr; }
+      .file-list { max-height: 420px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>CastHub</h1>
+    <span class="sub">局域网投屏控制台</span>
+    <span id="connState" class="conn-state">正在连接中枢…</span>
+  </header>
+
+  <main class="layout">
+    <section class="panel">
+      <h2>设备</h2>
+      <div class="form-row">
+        <input id="deviceAddress" type="text" placeholder="电视 WS 地址，如 ws://192.168.1.8:9417" />
+      </div>
+      <div class="form-row">
+        <input id="deviceToken" type="text" placeholder="6 位配对码" maxlength="6" inputmode="numeric" />
+        <button id="addDeviceBtn">添加</button>
+      </div>
+      <div id="deviceList" class="device-list">
+        <div class="empty">尚未添加设备</div>
+      </div>
+      <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6 位配对码，填入左侧即可。</div>
+    </section>
+
+    <section class="panel">
+      <h2>媒体库</h2>
+      <div id="breadcrumb" class="breadcrumb"></div>
+      <div id="fileList" class="file-list">
+        <div class="empty">正在加载…</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>播放控制</h2>
+      <div id="playerTitle" class="player-title">未在播放</div>
+      <span id="stateBadge" class="state-badge">idle</span>
+      <div class="progress-wrap">
+        <input id="seekSlider" type="range" min="0" max="1000" value="0" step="1" />
+        <div class="time-row"><span id="positionText">00:00</span><span id="durationText">00:00</span></div>
+      </div>
+      <div class="controls">
+        <button id="toggleBtn" disabled>播放</button>
+        <button id="stopBtn" class="secondary" disabled>停止</button>
+      </div>
+      <div class="hint">拖进度条松开后发送 seek；遥控器确认键也可播放/暂停，左右键 ±10 秒。</div>
+    </section>
+  </main>
+
+  <div id="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
