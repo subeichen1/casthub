@@ -1,1 +1,3 @@
-# 默认不混淆；保持空文件供 release 构建引用
+# Java-WebSocket 使用反射与运行时选择传输实现，保留其类名。
+-keep class org.java_websocket.** { *; }
+-dontwarn org.slf4j.**

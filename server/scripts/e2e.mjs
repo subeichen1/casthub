@@ -15,6 +15,7 @@ const OVERRIDE_PORT = HTTP_PORT + 1;
 const OVERRIDE_TV_PORT = TV_PORT + 1;
 const TOKEN = "246810";
 const OVERRIDE_TOKEN = "135790";
+const CONSOLE_TOKEN = "e2e-console-token-2024";
 
 const children = [];
 let exiting = false;
@@ -77,7 +78,7 @@ async function waitForHttp(url, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
       if (res.ok) return;
     } catch {
       // retry
@@ -167,13 +168,13 @@ async function main() {
   console.log("[2/10] 启动中枢 ...");
   const server = startProcess("server", ["--import", "tsx", "src/index.ts"], {
     cwd: SERVER_DIR,
-    env: { ...process.env, PORT: String(HTTP_PORT), HOST: "127.0.0.1", MEDIA_DIR: mediaDir, PUBLIC_BASE_URL: "" }
+    env: { ...process.env, PORT: String(HTTP_PORT), HOST: "127.0.0.1", MEDIA_DIR: mediaDir, PUBLIC_BASE_URL: "", CONSOLE_TOKEN }
   });
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
   console.log("[3/10] 连接控制台 WS ...");
-  const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console`);
+  const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await consoleClient.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   assert(true, "控制台 WS 已连接并收到初始 devices");
 
@@ -188,7 +189,7 @@ async function main() {
   assert(!!device, `设备上线: ${device.address}`);
 
   console.log("[5/10] 浏览文件 ...");
-  const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
+  const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
   const fileJson = await fileRes.json();
   const video = fileJson.entries.find((entry) => !entry.isDir && /\.(mp4|mkv|avi|mov|webm|ts)$/i.test(entry.name));
   assert(!!video, `/api/files 返回视频: ${video.name} (${video.size} bytes, ${video.mimeType})`);
@@ -239,12 +240,13 @@ async function main() {
       PORT: String(OVERRIDE_PORT),
       HOST: "127.0.0.1",
       MEDIA_DIR: mediaDir,
-      PUBLIC_BASE_URL: "http://10.0.2.2:9420"
+      PUBLIC_BASE_URL: "http://10.0.2.2:9420",
+      CONSOLE_TOKEN
     }
   });
   await overrideServer.waitFor(/CastHub 已启动/, 20000, "override 中枢启动");
   await waitForHttp(`http://127.0.0.1:${OVERRIDE_PORT}/api/files?path=`);
-  const overrideClient = await ConsoleClient.connect(`ws://127.0.0.1:${OVERRIDE_PORT}/console`);
+  const overrideClient = await ConsoleClient.connect(`ws://127.0.0.1:${OVERRIDE_PORT}/console?token=${CONSOLE_TOKEN}`);
   await overrideClient.waitFor((m) => m.type === "devices", 5000, "override devices");
   overrideClient.send({ type: "addDevice", address: `ws://127.0.0.1:${OVERRIDE_TV_PORT}`, token: OVERRIDE_TOKEN });
   const overrideOnline = await overrideClient.waitFor(

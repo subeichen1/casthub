@@ -4,6 +4,7 @@ import org.json.JSONObject
 
 /** 协议常量与消息构造/解析（与 PROTOCOL.md 一一对应）。 */
 object Protocol {
+    const val PROTOCOL_VERSION = 1
     const val TYPE_HELLO = "hello"
     const val TYPE_HELLO_ACK = "helloAck"
     const val TYPE_PLAY = "play"
@@ -17,6 +18,7 @@ object Protocol {
 
     fun helloAck(deviceName: String): String = JSONObject().apply {
         put("type", TYPE_HELLO_ACK)
+        put("version", PROTOCOL_VERSION)
         put("ok", true)
         put("deviceName", deviceName)
     }.toString()

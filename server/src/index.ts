@@ -1,11 +1,16 @@
 // CastHub 中枢入口：读取 MEDIA_DIR / PUBLIC_BASE_URL / config.json，启动 HTTP + WS 服务
 import Fastify from "fastify";
 import * as fs from "node:fs";
+import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
+import { randomBytes } from "node:crypto";
 import { attachConsoleWs } from "./console-ws";
 import { DeviceManager } from "./devices";
 import { DlnaService } from "./dlna";
 import { registerFileRoutes } from "./files";
+import { createRotatingLogStream } from "./log";
+import { resolveConsoleToken } from "./security";
 
 const DEFAULT_PORT = 9420;
 const DEFAULT_MEDIA_DIR = path.resolve(__dirname, "..", "media");
@@ -14,16 +19,23 @@ const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 export interface ServerConfig {
   mediaDir: string;
   publicBaseUrl?: string;
+  consoleToken?: string;
 }
 
 export interface ServerHandle {
+  /** 仅本机（Electron 壳）使用的控制台地址。 */
   url: string;
+  /** 控制台访问令牌，Electron 壳用它打开页面；命令行会写入 console-token.txt。 */
+  consoleToken: string;
+  /** 给电视/手机等局域网设备使用的媒体基地址。 */
+  publicBaseUrl: string;
   close: () => Promise<void>;
 }
 
 /**
  * 读取指定目录下的 config.json（不存在则返回空对象）。
  * mediaDir 相对路径按 config.json 所在目录解析。
+ * 配置损坏时直接抛错，避免静默回退到错误目录。
  */
 export function readConfigFile(dir: string): Partial<ServerConfig> {
   const configPath = path.join(dir, "config.json");
@@ -33,29 +45,41 @@ export function readConfigFile(dir: string): Partial<ServerConfig> {
     raw = fs.readFileSync(configPath, "utf8").replace(/^\uFEFF/, "");
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    if (code !== "ENOENT") {
-      console.error(`[config] 无法读取 ${configPath}: ${(error as Error).message}（已忽略）`);
-    }
-    return {};
+    if (code === "ENOENT") return {};
+    throw new Error(`无法读取配置 ${configPath}: ${(error as Error).message}`);
   }
+
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error("config.json 必须是 JSON 对象");
-    }
-    const obj = parsed as Record<string, unknown>;
-    const result: Partial<ServerConfig> = {};
-    if (typeof obj.mediaDir === "string" && obj.mediaDir.trim()) {
-      result.mediaDir = path.resolve(dir, obj.mediaDir.trim());
-    }
-    if (typeof obj.publicBaseUrl === "string" && obj.publicBaseUrl.trim()) {
-      result.publicBaseUrl = obj.publicBaseUrl.trim();
-    }
-    return result;
+    parsed = JSON.parse(raw);
   } catch (error) {
-    console.error(`[config] 解析 ${configPath} 失败: ${(error as Error).message}（已忽略）`);
-    return {};
+    throw new Error(`解析配置 ${configPath} 失败: ${(error as Error).message}`);
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`配置 ${configPath} 必须是 JSON 对象`);
+  }
+
+  const obj = parsed as Record<string, unknown>;
+  const result: Partial<ServerConfig> = {};
+  if (obj.mediaDir !== undefined && typeof obj.mediaDir !== "string") {
+    throw new Error("config.json 的 mediaDir 必须是字符串");
+  }
+  if (typeof obj.mediaDir === "string" && obj.mediaDir.trim()) {
+    result.mediaDir = path.resolve(dir, obj.mediaDir.trim());
+  }
+  if (obj.publicBaseUrl !== undefined && typeof obj.publicBaseUrl !== "string") {
+    throw new Error("config.json 的 publicBaseUrl 必须是字符串");
+  }
+  if (typeof obj.publicBaseUrl === "string" && obj.publicBaseUrl.trim()) {
+    result.publicBaseUrl = obj.publicBaseUrl.trim();
+  }
+  if (obj.consoleToken !== undefined && typeof obj.consoleToken !== "string") {
+    throw new Error("config.json 的 consoleToken 必须是字符串");
+  }
+  if (typeof obj.consoleToken === "string" && obj.consoleToken.trim()) {
+    result.consoleToken = obj.consoleToken.trim();
+  }
+  return result;
 }
 
 /**
@@ -69,7 +93,38 @@ export function resolveServerConfig(config: ServerConfig, configDir: string = pr
   const mediaDir = envMediaDir ? path.resolve(envMediaDir) : fileConfig.mediaDir ?? path.resolve(config.mediaDir);
   const publicBaseUrl =
     envPublicBaseUrl !== undefined ? envPublicBaseUrl.trim() : fileConfig.publicBaseUrl ?? config.publicBaseUrl;
-  return { mediaDir, publicBaseUrl };
+  const consoleToken = fileConfig.consoleToken ?? config.consoleToken;
+  return { mediaDir, publicBaseUrl, consoleToken };
+}
+
+/**
+ * 探测局域网 IPv4 地址，供电视/手机访问媒体。
+ * 过滤回环、链路本地地址，并优先 192.168/10/172.16-31 私网段。
+ */
+export function detectLanIpv4(): string | null {
+  const candidates: Array<{ address: string; score: number }> = [];
+  for (const [name, infos] of Object.entries(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (!info || info.family !== "IPv4" || info.internal) continue;
+      if (info.address.startsWith("127.") || info.address.startsWith("169.254.")) continue;
+      let score = 100;
+      const lowerName = name.toLowerCase();
+      if (/(docker|veth|vmware|virtualbox|hyper-v|vethernet|wsl|tailscale|zerotier)/.test(lowerName)) {
+        score += 50;
+      }
+      if (info.address.startsWith("192.168.")) score -= 10;
+      else if (info.address.startsWith("10.")) score += 0;
+      else if (/^172\.(1[6-9]|2\d|3[01])\./.test(info.address)) score += 10;
+      else score += 20;
+      candidates.push({ address: info.address, score });
+    }
+  }
+  candidates.sort((a, b) => a.score - b.score);
+  return candidates[0]?.address ?? null;
+}
+
+function formatHostForUrl(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 /**
@@ -82,37 +137,56 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   await fs.promises.mkdir(resolved.mediaDir, { recursive: true });
 
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
-  const host = process.env.HOST ?? "0.0.0.0";
-
-  // console-ws 直接读取 process.env.PUBLIC_BASE_URL；把 config.json 的值同步进环境变量，
-  // 保证既有业务模块零改动即可享受 环境变量 > config.json > 默认值 的优先级。
-  const previousPublicBaseUrl = process.env.PUBLIC_BASE_URL;
-  if (resolved.publicBaseUrl !== undefined) {
-    process.env.PUBLIC_BASE_URL = resolved.publicBaseUrl;
-  } else if (previousPublicBaseUrl === undefined) {
-    process.env.PUBLIC_BASE_URL = "";
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`PORT 必须是 1-65535 之间的整数，当前为 ${String(process.env.PORT)}`);
   }
+  const host = (process.env.HOST ?? "0.0.0.0").trim();
+  if (!host) throw new Error("HOST 不能为空");
+  if (net.isIP(host) === 0 && host !== "localhost") {
+    throw new Error(`HOST 必须是 IP 地址或 localhost，当前为 ${host}`);
+  }
+
+  const consoleToken = resolveConsoleToken(configDir, resolved.consoleToken);
+  const mediaSigningKey = randomBytes(32);
 
   const logFile = (process.env.CASTHUB_LOG_FILE ?? "").trim();
-  if (logFile) {
-    fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  }
-
-  const app = Fastify({ logger: logFile ? { level: "info", file: logFile } : true });
+  const app = Fastify({ logger: logFile ? { level: "info", stream: createRotatingLogStream(logFile) } : true });
   const devices = new DeviceManager();
   const dlna = new DlnaService();
 
-  await registerFileRoutes(app, resolved.mediaDir);
-  const consoleWs = attachConsoleWs(app, devices, resolved.mediaDir, dlna);
+  // 安全响应头：控制台页面只允许加载自身资源。
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "no-referrer");
+    reply.header(
+      "Content-Security-Policy",
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'"
+    );
+    return payload;
+  });
+
+  // 媒体地址必须在监听前确定；显式配置优先，否则探测局域网地址。
+  const explicitPublicBaseUrl = (resolved.publicBaseUrl ?? "").trim();
+  const lanIp = detectLanIpv4();
+  const publicHost = host === "0.0.0.0" || host === "::" ? lanIp ?? "127.0.0.1" : host;
+  const publicBaseUrl = (explicitPublicBaseUrl || `http://${formatHostForUrl(publicHost)}:${port}`).replace(/\/+$/, "");
+
+  await registerFileRoutes(app, resolved.mediaDir, { consoleToken, mediaSigningKey });
+  const consoleWs = attachConsoleWs(app, devices, resolved.mediaDir, dlna, {
+    consoleToken,
+    publicBaseUrl,
+    mediaSigningKey,
+  });
 
   // 控制台静态页面（无构建步骤）
   app.get("/", async (_request, reply) => {
     const html = await fs.promises.readFile(path.join(PUBLIC_DIR, "index.html"), "utf8");
-    return reply.type("text/html; charset=utf-8").send(html);
+    return reply.header("Cache-Control", "no-store").type("text/html; charset=utf-8").send(html);
   });
   app.get("/app.js", async (_request, reply) => {
     const js = await fs.promises.readFile(path.join(PUBLIC_DIR, "app.js"), "utf8");
-    return reply.type("application/javascript; charset=utf-8").send(js);
+    return reply.header("Cache-Control", "no-store").type("application/javascript; charset=utf-8").send(js);
   });
 
   // 兜底：任何试图访问项目内部文件（MEDIA_DIR/public 之外）的路径一律 403。
@@ -136,32 +210,34 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   });
 
   await app.listen({ port, host });
-  const displayHost = host === "0.0.0.0" ? "127.0.0.1" : host;
-  const url = `http://${displayHost}:${port}`;
-  app.log.info(`CastHub 已启动 ${url}  MEDIA_DIR=${resolved.mediaDir}`);
-  dlna.start();
+  const displayHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+  const url = `http://${formatHostForUrl(displayHost)}:${port}`;
+  app.log.info(`CastHub 已启动 ${url}  MEDIA_BASE=${publicBaseUrl}  MEDIA_DIR=${resolved.mediaDir}`);
+  try {
+    await dlna.start();
+  } catch (error) {
+    await app.close().catch(() => undefined);
+    throw error;
+  }
 
   let closed = false;
   const close = async (): Promise<void> => {
     if (closed) return;
     closed = true;
-    dlna.dispose();
+    await dlna.dispose();
     devices.dispose();
     for (const client of consoleWs.clients) client.terminate();
     await new Promise<void>((resolve) => consoleWs.close(() => resolve()));
     await app.close();
-    if (previousPublicBaseUrl === undefined) {
-      delete process.env.PUBLIC_BASE_URL;
-    } else {
-      process.env.PUBLIC_BASE_URL = previousPublicBaseUrl;
-    }
   };
 
-  return { url, close };
+  return { url, consoleToken, publicBaseUrl, close };
 }
 
 async function main(): Promise<void> {
   const server = await startServer({ mediaDir: DEFAULT_MEDIA_DIR });
+  const tokenFile = path.join((process.env.CASTHUB_CONFIG_DIR ?? "").trim() || process.cwd(), "console-token.txt");
+  console.log(`控制台令牌文件: ${tokenFile}`);
   const shutdown = async (): Promise<void> => {
     await server.close();
     process.exit(0);

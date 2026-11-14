@@ -7,6 +7,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,6 +16,7 @@ import android.view.View
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -50,9 +52,17 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
 
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var pausedForFocus = false
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
-        if (focusChange == AudioManager.AUDIOFOCUS_LOSS) {
-            player.pause()
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                pausedForFocus = player.isPlaying
+                player.pause()
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                if (pausedForFocus && !isFinishing) player.play()
+                pausedForFocus = false
+            }
         }
     }
 
@@ -82,17 +92,39 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 pushStatus(
-                    if (isPlaying) "playing"
-                    else if (player.playbackState == Player.STATE_READY) "paused"
-                    else "buffering"
+                    when {
+                        isPlaying -> "playing"
+                        player.playbackState == Player.STATE_READY -> "paused"
+                        player.playbackState == Player.STATE_BUFFERING -> "buffering"
+                        else -> "idle"
+                    }
                 )
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e(TAG, "播放失败: ${error.errorCodeName} ${error.message}", error)
+                pushStatus("error")
+                finish()
             }
         })
 
         loadMedia(intent)
-        requestAudioFocus()
+        if (!requestAudioFocus()) {
+            Log.w(TAG, "无法获取音频焦点")
+            pushStatus("error")
+            finish()
+            return
+        }
         TvWsServer.instance?.attachController(this)
         uiHandler.postDelayed(statusTicker, 1000L)
+    }
+
+    override fun onPause() {
+        if (::player.isInitialized && player.isPlaying) {
+            player.pause()
+            pushStatus("paused")
+        }
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -180,9 +212,9 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
             )
     }
 
-    private fun requestAudioFocus() {
+    private fun requestAudioFocus(): Boolean {
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -193,14 +225,14 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
                 .setOnAudioFocusChangeListener(audioFocusListener)
                 .build()
             audioFocusRequest = request
-            audioManager?.requestAudioFocus(request)
+            audioManager?.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         } else {
             @Suppress("DEPRECATION")
             audioManager?.requestAudioFocus(
                 audioFocusListener,
                 AudioManager.STREAM_MUSIC,
                 AudioManager.AUDIOFOCUS_GAIN
-            )
+            ) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
         }
     }
 

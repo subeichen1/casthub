@@ -10,6 +10,7 @@ import WebSocket from "ws";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.resolve(__dirname, "..");
 const HTTP_PORT = Number(process.env.E2E_DLNA_PORT ?? 9430);
+const CONSOLE_TOKEN = "e2e-dlna-token-2024";
 
 const children = [];
 let exiting = false;
@@ -72,7 +73,7 @@ async function waitForHttp(url, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
       if (res.ok) return;
     } catch {
       // retry
@@ -154,13 +155,15 @@ function startHub(mediaDir, extraEnv = {}) {
       HOST: "127.0.0.1",
       MEDIA_DIR: mediaDir,
       PUBLIC_BASE_URL: "",
+      CONSOLE_TOKEN,
+      DLNA_ALLOW_LOOPBACK: "1",
       ...extraEnv
     }
   });
 }
 
 async function connectConsole() {
-  const client = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console`);
+  const client = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await client.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   return client;
 }
@@ -217,7 +220,7 @@ async function main() {
   assert(device.deviceName === "Fake DLNA TV", "deviceName 来自 device.xml friendlyName");
 
   console.log("[4/9] 浏览文件 ...");
-  const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
+  const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
   const fileJson = await fileRes.json();
   const video = fileJson.entries.find((entry) => !entry.isDir && /\.(mp4|mkv|avi|mov|webm|ts)$/i.test(entry.name));
   assert(!!video, `/api/files 返回视频: ${video.name} (${video.size} bytes, ${video.mimeType})`);

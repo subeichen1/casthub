@@ -2,30 +2,84 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { WebSocketServer, WebSocket } from "ws";
+import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
-import { mimeTypeOf, resolveWithin } from "./files";
+import { mimeTypeOf, resolveWithinReal } from "./files";
+import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 
 type ConsolePayload = Record<string, unknown>;
 
 const DLNA_MANUAL_ERROR = "DLNA 设备为自动发现，不支持手动增删";
+const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_MESSAGES_PER_WINDOW = 120;
+const MESSAGE_WINDOW_MS = 10_000;
+const MAX_AUTH_FAILURES = 10;
+const AUTH_BLOCK_MS = 60_000;
+const MAX_CONNECTIONS = 32;
+const HEARTBEAT_INTERVAL_MS = 15_000;
+const MAX_AUTH_TRACKED_IPS = 1024;
+
+export interface ConsoleWsOptions {
+  consoleToken: string;
+  publicBaseUrl: string;
+  mediaSigningKey: Buffer;
+}
 
 function sendJson(ws: WebSocket, payload: unknown): void {
   if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+}
+
+function rawDataLength(data: RawData): number {
+  if (Array.isArray(data)) return data.reduce((sum, part) => sum + part.length, 0);
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  return data.length;
+}
+
+function clientIp(req: { socket: { remoteAddress?: string | undefined } }): string {
+  return req.socket.remoteAddress ?? "unknown";
+}
+
+function originAllowed(origin: string | undefined, reqHost: string | undefined, publicBaseUrl: string): boolean {
+  // 非浏览器客户端通常不发送 Origin；浏览器连接必须校验，防止任意网页连本机 WS。
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    if (reqHost && parsed.host.toLowerCase() === reqHost.toLowerCase()) return true;
+    if (publicBaseUrl && parsed.origin.toLowerCase() === publicBaseUrl.toLowerCase()) return true;
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 export function attachConsoleWs(
   app: FastifyInstance,
   devices: DeviceManager,
   mediaRoot: string,
-  dlna: DlnaService
+  dlna: DlnaService,
+  options: ConsoleWsOptions
 ): WebSocketServer {
-  const wss = new WebSocketServer({ server: app.server, path: "/console" });
+  const wss = new WebSocketServer({
+    server: app.server,
+    path: "/console",
+    maxPayload: MAX_MESSAGE_BYTES,
+    perMessageDeflate: false,
+  });
+
+  const authorized = new Set<WebSocket>();
+  const authFailures = new Map<string, { count: number; blockedUntil: number }>();
+
+  const pruneAuthFailures = (now: number): void => {
+    for (const [ip, failure] of authFailures) {
+      if (failure.blockedUntil !== 0 && failure.blockedUntil <= now) authFailures.delete(ip);
+    }
+    if (authFailures.size > MAX_AUTH_TRACKED_IPS) authFailures.clear();
+  };
 
   const broadcast = (payload: unknown): void => {
     const text = JSON.stringify(payload);
-    for (const client of wss.clients) {
+    for (const client of authorized) {
       if (client.readyState === WebSocket.OPEN) client.send(text);
     }
   };
@@ -41,13 +95,74 @@ export function attachConsoleWs(
   dlna.onDeviceError = (_deviceId, message) => broadcast({ type: "error", message });
 
   wss.on("connection", (ws, req) => {
-    const host = req.headers.host || "127.0.0.1:9420";
-    const override = (process.env.PUBLIC_BASE_URL ?? "").trim();
-    const baseUrl = (override || `http://${host}`).replace(/\/$/, "");
+    if (wss.clients.size > MAX_CONNECTIONS) {
+      ws.close(1013, "too many connections");
+      return;
+    }
+    const ip = clientIp(req as { socket: { remoteAddress?: string } });
+    const now = Date.now();
+    pruneAuthFailures(now);
+    const failure = authFailures.get(ip);
+    if (failure && failure.blockedUntil > now) {
+      ws.close(1008, "unauthorized");
+      return;
+    }
+
+    const requestUrl = new URL(req.url ?? "/console", "http://localhost");
+    const token = requestUrl.searchParams.get("token") ?? String(req.headers["x-casthub-token"] ?? "");
+    if (!safeTokenEquals(options.consoleToken, token)) {
+      const next = { count: (failure?.count ?? 0) + 1, blockedUntil: 0 };
+      if (next.count >= MAX_AUTH_FAILURES) next.blockedUntil = now + AUTH_BLOCK_MS;
+      authFailures.set(ip, next);
+      ws.close(1008, "unauthorized");
+      return;
+    }
+    authFailures.delete(ip);
+    if (!originAllowed(req.headers.origin, req.headers.host, options.publicBaseUrl)) {
+      ws.close(1008, "bad origin");
+      return;
+    }
+
+    authorized.add(ws);
+    let messageWindowStart = Date.now();
+    let messageCount = 0;
+    let alive = true;
+    const heartbeat = setInterval(() => {
+      if (!alive) {
+        ws.terminate();
+        return;
+      }
+      alive = false;
+      try {
+        ws.ping();
+      } catch {
+        ws.terminate();
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+    ws.on("pong", () => {
+      alive = true;
+    });
+    ws.on("close", () => clearInterval(heartbeat));
 
     sendJson(ws, { type: "devices", list: allDevices() });
 
     ws.on("message", async (data) => {
+      if (rawDataLength(data) > MAX_MESSAGE_BYTES) {
+        sendJson(ws, { type: "error", message: "消息过大" });
+        return;
+      }
+      const current = Date.now();
+      if (current - messageWindowStart > MESSAGE_WINDOW_MS) {
+        messageWindowStart = current;
+        messageCount = 0;
+      }
+      messageCount += 1;
+      if (messageCount > MAX_MESSAGES_PER_WINDOW) {
+        sendJson(ws, { type: "error", message: "消息过于频繁" });
+        ws.close(1008, "rate limited");
+        return;
+      }
+
       let msg: ConsolePayload;
       try {
         const parsed = JSON.parse(data.toString());
@@ -66,7 +181,13 @@ export function attachConsoleWs(
               sendJson(ws, { type: "error", message: DLNA_MANUAL_ERROR });
               break;
             }
-            const device = devices.add(address, String(msg.token ?? ""));
+            let device: ReturnType<DeviceManager["add"]>;
+            try {
+              device = devices.add(address, String(msg.token ?? ""));
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
+              break;
+            }
             broadcastDevices();
             console.log(`[console] 添加设备 ${device.address} (${device.id})`);
             break;
@@ -89,7 +210,7 @@ export function attachConsoleWs(
           case "cast": {
             const deviceId = String(msg.deviceId ?? "");
             const relPath = String(msg.path ?? "");
-            const target = resolveWithin(mediaRoot, relPath);
+            const target = await resolveWithinReal(mediaRoot, relPath);
             if (!target) {
               sendJson(ws, { type: "error", message: "路径非法" });
               return;
@@ -105,8 +226,12 @@ export function attachConsoleWs(
               sendJson(ws, { type: "error", message: "只能投屏文件" });
               return;
             }
-            const encodedPath = relPath.split("/").map((part) => encodeURIComponent(part)).join("/");
-            const url = `${baseUrl}/media/${encodedPath}`;
+            const realRoot = await fs.promises.realpath(mediaRoot);
+            const actualRelPath = path.relative(realRoot, target).replace(/\\/g, "/");
+            const expires = Date.now() + MEDIA_URL_TTL_MS;
+            const signature = signMediaPath(options.mediaSigningKey, actualRelPath, expires);
+            const encodedPath = actualRelPath.split("/").map((part) => encodeURIComponent(part)).join("/");
+            const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}`;
             const title = path.basename(target);
             const mimeType = mimeTypeOf(target);
             if (devices.has(deviceId)) {
@@ -121,7 +246,7 @@ export function attachConsoleWs(
               sendJson(ws, { type: "error", message: "设备不存在" });
               return;
             }
-            console.log(`[console] 投屏 ${relPath} -> ${deviceId}: ${url}`);
+            console.log(`[console] 投屏 ${actualRelPath} -> ${deviceId}`);
             break;
           }
           case "control": {
@@ -147,10 +272,12 @@ export function attachConsoleWs(
             sendJson(ws, { type: "error", message: `未知消息类型: ${String(msg.type)}` });
         }
       } catch (error) {
-        sendJson(ws, { type: "error", message: error instanceof Error ? error.message : String(error) });
+        console.error("[console-ws] 处理消息失败:", error);
+        sendJson(ws, { type: "error", message: "操作失败" });
       }
     });
 
+    ws.on("close", () => authorized.delete(ws));
     ws.on("error", (error) => {
       console.error("[console-ws] 客户端错误:", error.message);
     });

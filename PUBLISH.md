@@ -1,6 +1,6 @@
 # CastHub GitHub 发布手册
 
-> **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`，Release `v0.1.0` 已上传 `CastHub.exe` 与 `app-debug.apk`。本文保留为发布流程参考。
+> **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
 > 适用场景：本机没有安装 GitHub CLI（`gh`），或 `gh` 未登录 GitHub。本文按"网页建仓 + Git 命令行推送"的手工路径写成；仓库本身已经整理完毕（分支 `main`、历史保留、构建产物已排除出 git），照着做即可发布。
 >
@@ -92,23 +92,26 @@ git log origin/main -1 --oneline
    - CI 在 Ubuntu 上跑两条 e2e：`node scripts/e2e.mjs` 与 `node scripts/e2e-dlna.mjs`。
    - GitHub Actions 的容器网络通常限制多播，`e2e-dlna.mjs` 在 8 秒内发现不到 DLNA 设备时会自动改用 `DLNA_SEED` 重启中枢（脚本 `server/scripts/e2e-dlna.mjs` 第 201–214 行的降级分支），不会硬失败。若 CI 仍失败，请点进具体 job 查看日志。
 
-## 5. 可选：创建 v0.1.0 Release 并上传构建产物
+## 5. 创建 v0.1.1 Release（由 Release workflow 自动构建）
 
 构建产物不进入 git 仓库（`.gitignore` 已排除 `*.exe`、`*.apk`、`server/release/` 等），请通过 GitHub Release 分发。
 
 1. 仓库主页右侧 **Releases** → **Create a new release**。
-2. **Choose a tag** 填 `v0.1.0`，Target 选 `main`，Release title 填 `CastHub v0.1.0`。
-3. 上传以下两个文件（拖拽到 **Attach binaries** 区域）：
-   - `server/release/CastHub.exe`（Windows 桌面版，约 67 MB）
-   - `server/release/app-debug.apk`（Android TV 安装包，6,437,094 字节；本地构建产物原始路径为 `tv-app/app/build/outputs/apk/debug/app-debug.apk`）
+2. **Choose a tag** 填 `v0.1.1`，Target 选 `main`，Release title 填 `CastHub v0.1.1`。
+3. 推荐由 `.github/workflows/release.yml` 在推送 `v*` 标签时自动构建并上传以下文件（拖拽到 **Attach binaries** 区域仅用于手工兜底）：
+   - `CastHub.exe`（Windows 桌面版，需 Authenticode 签名）
+   - `CastHub-TV.apk`（Android TV 安装包，需 release keystore 签名；构建产物原始路径为 `tv-app/app/build/outputs/apk/release/app-release.apk`）
+   - `casthub-src.tar.gz` 与 `checksums.txt`（SHA-256 校验和）
+
+   > 历史 `v0.1.0` 附件中的 `app-debug.apk` 是未签名调试包，禁止继续分发。
 4. 可附发布说明，例如：
 
    ```markdown
-   CastHub v0.1.0 — 首个开源版本
-   - PC 中枢 + 浏览器控制台 + Android TV 客户端
-   - 支持投屏、播放/暂停/拖动进度/停止
-   - DLNA 兼容模式（降级路径）
-   - Windows 桌面版（portable）
+   CastHub v0.1.1 — 安全与可靠性修复
+   - 修复 29 项安全问题与可靠性问题
+   - 控制台令牌与媒体签名 URL、DLNA 安全校验
+   - Android TV 8 位配对码与 release 签名流程
+   - Windows 桌面版（portable，正式包由 CI 签名）
    ```
 
 5. 点 **Publish release**。

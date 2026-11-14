@@ -165,6 +165,28 @@
       font-size: 13px;
     }
     .dlna-banner[hidden] { display: none; }
+    .auth-gate {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(8, 15, 28, 0.92);
+      backdrop-filter: blur(6px);
+    }
+    .auth-gate[hidden] { display: none; }
+    .auth-card {
+      width: min(420px, calc(100vw - 40px));
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    }
+    .auth-card h2 { margin: 0 0 8px; color: #cbd5e1; font-size: 18px; }
+    .auth-card p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 14px; }
+    .auth-error { color: #fca5a5; font-size: 12px; min-height: 18px; margin-top: 8px; }
     @media (max-width: 1100px) {
       .layout { grid-template-columns: 1fr; }
       .file-list { max-height: 420px; }
@@ -172,6 +194,17 @@
   </style>
 </head>
 <body>
+  <div id="authGate" class="auth-gate" hidden>
+    <div class="auth-card">
+      <h2>连接 CastHub 控制台</h2>
+      <p>请输入 PC 端配置目录中 <code>console-token.txt</code> 里的访问令牌。桌面版会自动填入。</p>
+      <div class="form-row">
+        <input id="consoleToken" type="password" placeholder="控制台访问令牌" autocomplete="current-password" />
+      </div>
+      <button id="connectBtn">连接</button>
+      <div id="authError" class="auth-error"></div>
+    </div>
+  </div>
   <header>
     <h1>CastHub</h1>
     <span class="sub">局域网投屏控制台</span>
@@ -192,13 +225,13 @@
         <input id="deviceAddress" type="text" placeholder="电视 WS 地址，如 ws://192.168.1.8:9417" />
       </div>
       <div class="form-row">
-        <input id="deviceToken" type="text" placeholder="6 位配对码" maxlength="6" inputmode="numeric" />
+        <input id="deviceToken" type="password" placeholder="6-8 位配对码" maxlength="8" inputmode="numeric" autocomplete="one-time-code" />
         <button id="addDeviceBtn">添加</button>
       </div>
       <div id="deviceList" class="device-list">
         <div class="empty">尚未添加设备</div>
       </div>
-      <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6 位配对码，填入上方即可。支持 DLNA 的电视会自动出现在列表中（DLNA 设备无需配对码，也不支持手动增删）。</div>
+      <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6-8 位配对码，填入上方即可。支持 DLNA 的电视会自动出现在列表中（DLNA 设备无需配对码，也不支持手动增删）。</div>
     </section>
 
     <section class="panel">
@@ -207,6 +240,7 @@
       <div id="fileList" class="file-list">
         <div class="empty">正在加载…</div>
       </div>
+      <button id="loadMoreBtn" class="secondary small" hidden style="margin-top:10px">加载更多</button>
     </section>
 
     <section class="panel">

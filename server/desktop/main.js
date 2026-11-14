@@ -6,8 +6,8 @@ const net = require("node:net");
 const path = require("node:path");
 
 const DEFAULT_PORT = 9420;
-const TV_PORT = 9417; // 电视端 WS 端口（CastHub 本身不监听，仅用于启动前冲突提示）
 const APP_ICON = path.join(__dirname, "assets", "icon.ico");
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
 
 let mainWindow = null;
 let serverHandle = null;
@@ -28,7 +28,15 @@ function logToFile(appRoot, message) {
     return;
   }
   try {
-    fs.appendFileSync(path.join(appRoot, "casthub.log"), `[${new Date().toISOString()}] ${message}\n`, "utf8");
+    const logPath = path.join(appRoot, "casthub.log");
+    try {
+      if (fs.statSync(logPath).size >= MAX_LOG_BYTES) {
+        fs.renameSync(logPath, `${logPath}.1`);
+      }
+    } catch {
+      // 文件尚不存在或轮转失败时继续追加
+    }
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${message}\n`, "utf8");
   } catch {
     // 日志写不进去不能影响主流程
   }
@@ -57,7 +65,10 @@ function createWindow() {
     backgroundColor: "#10161d",
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false
     }
   });
   // 页面 <title> 是「CastHub 控制台」，这里固定窗口标题为 CastHub
@@ -82,13 +93,15 @@ async function boot() {
   }
 
   const port = Number(process.env.PORT || DEFAULT_PORT);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    showErrorPage(appRoot, `PORT 必须是 1-65535 之间的整数，当前为 ${process.env.PORT}`);
+    return;
+  }
 
   // 先检查端口占用（坑位 3），占用则显示错误页，绝不白屏或静默失败
-  for (const checkedPort of [port, TV_PORT]) {
-    if (await isPortInUse(checkedPort)) {
-      showErrorPage(appRoot, `端口 ${checkedPort} 被占用，请关闭占用程序后重试`);
-      return;
-    }
+  if (await isPortInUse(port)) {
+    showErrorPage(appRoot, `端口 ${port} 被占用，请关闭占用程序后重试`);
+    return;
   }
 
   try {
@@ -96,7 +109,10 @@ async function boot() {
     const { startServer } = require("../dist/index.js");
     serverHandle = await startServer({ mediaDir: path.join(appRoot, "media") });
     createWindow();
-    await mainWindow.loadURL(serverHandle.url || `http://127.0.0.1:${port}`);
+    const consoleUrl = new URL(serverHandle.url || `http://127.0.0.1:${port}`);
+    // 令牌放在 fragment，不会进入 HTTP 请求、服务端访问日志或代理日志。
+    consoleUrl.hash = "token=" + encodeURIComponent(serverHandle.consoleToken || "");
+    await mainWindow.loadURL(consoleUrl.toString());
   } catch (error) {
     const message =
       error && error.code === "EADDRINUSE"

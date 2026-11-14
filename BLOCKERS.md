@@ -9,7 +9,9 @@
 - 替代措施：已下载公开示例 MP4（MDN `flower.mp4`，约 1.1 MB）保存为 `server/media/test.mp4`，用于 Phase 1 Range 门禁验证。
 - 用户实际使用时：把自己的视频放入 `MEDIA_DIR`（默认 `server/media`）即可。
 
-## Phase 3 — Android 构建（已解决）与模拟器验证（pending）
+## Phase 3 — Android 构建（历史已解决）与模拟器验证（pending）
+
+> **状态更新（2026-11-14 安全修复后）**：本机已使用独立工具链（JDK 17.0.21、Android SDK 34，见下）重新执行 `assembleDebug` / `assembleRelease`，均 BUILD SUCCESSFUL；最新 debug APK 6,493,060 字节、release unsigned APK 1,765,542 字节。`app-debug.apk` 仍只用于本地调试，正式包由 `.github/workflows/release.yml` 使用 release keystore 签名。模拟器/真机运行验证仍 pending。
 
 - 初始环境：`ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 为空，无 JDK / Gradle / SDK / AVD。
 - 已补齐本地工具链：JDK 17.0.21（Temurin）、Gradle 8.2、Android SDK Platform 34、Build-Tools 34.0.0；仅用于本机验证，不随仓库交付。

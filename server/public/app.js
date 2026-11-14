@@ -6,16 +6,36 @@
     devices: [],
     selectedDeviceId: null,
     files: [],
+    filesOffset: 0,
+    filesTotal: 0,
     currentPath: "",
     tvStatus: null,
     currentTitle: "",
     castingDeviceId: null,
     ws: null,
     reconnectTimer: null,
-    draggingSeek: false
+    draggingSeek: false,
+    consoleToken: "",
+    authenticated: false
   };
 
+  const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
+  const tokenFromQuery = new URLSearchParams(location.search).get("token");
+  const incomingToken = tokenFromHash || tokenFromQuery;
+  if (incomingToken) {
+    state.consoleToken = incomingToken;
+    try { localStorage.setItem("casthub-token", incomingToken); } catch (error) { /* ignore */ }
+    try { history.replaceState(null, "", location.pathname); } catch (error) { /* ignore */ }
+  } else {
+    try { state.consoleToken = localStorage.getItem("casthub-token") || ""; } catch (error) { /* ignore */ }
+  }
+
   const els = {
+    authGate: document.getElementById("authGate"),
+    consoleTokenInput: document.getElementById("consoleToken"),
+    connectBtn: document.getElementById("connectBtn"),
+    authError: document.getElementById("authError"),
+    loadMoreBtn: document.getElementById("loadMoreBtn"),
     connState: document.getElementById("connState"),
     deviceAddress: document.getElementById("deviceAddress"),
     deviceToken: document.getElementById("deviceToken"),
@@ -45,16 +65,44 @@
     }, 3200);
   }
 
+  function showAuthGate(message) {
+    state.authenticated = false;
+    els.authGate.hidden = false;
+    els.authError.textContent = message || "";
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+  }
+
+  function hideAuthGate() {
+    els.authGate.hidden = true;
+    els.authError.textContent = "";
+  }
+
   function connectWs() {
+    if (!state.consoleToken) {
+      showAuthGate("");
+      return;
+    }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(protocol + "//" + location.host + "/console");
+    const ws = new WebSocket(protocol + "//" + location.host + "/console?token=" + encodeURIComponent(state.consoleToken));
     state.ws = ws;
 
     ws.onopen = function () {
+      state.authenticated = true;
+      hideAuthGate();
       els.connState.textContent = "已连接中枢";
       els.connState.className = "conn-state ok";
     };
-    ws.onclose = function () {
+    ws.onclose = function (event) {
+      if (event.code === 1008) {
+        state.ws = null;
+        showAuthGate("访问令牌无效或已过期，请重新输入。");
+        els.connState.textContent = "需要访问令牌";
+        els.connState.className = "conn-state bad";
+        return;
+      }
       els.connState.textContent = "中枢连接断开，2 秒后重连…";
       els.connState.className = "conn-state bad";
       if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
@@ -125,7 +173,7 @@
       row.className = "device" + (device.id === state.selectedDeviceId ? " active" : "");
       const removeButton = isDlna
         ? '<span>自动发现</span>'
-        : '<button class="danger" data-remove="' + device.id + '">移除</button>';
+        : '<button class="danger" data-remove="' + escapeHtml(device.id) + '">移除</button>';
       row.innerHTML =
         '<div><span class="badge ' + (isDlna ? "dlna" : "app") + '">' + (isDlna ? "DLNA" : "App") + '</span>' +
         '<span class="name">' + escapeHtml(device.deviceName || (isDlna ? "DLNA 设备" : "电视")) + '</span></div>' +
@@ -219,7 +267,8 @@
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
   }
 
   function formatSize(bytes) {
@@ -229,20 +278,37 @@
     return (bytes / 1024 / 1024 / 1024).toFixed(2) + " GB";
   }
 
-  function loadFiles(path) {
-    state.currentPath = path || "";
-    fetch("/api/files?path=" + encodeURIComponent(state.currentPath))
+  function loadFiles(path, append) {
+    if (!append) {
+      state.currentPath = path || "";
+      state.files = [];
+      state.filesOffset = 0;
+      state.filesTotal = 0;
+    } else if (state.filesOffset >= state.filesTotal) {
+      return;
+    }
+    const offset = append ? state.filesOffset : 0;
+    fetch("/api/files?path=" + encodeURIComponent(state.currentPath) + "&limit=200&offset=" + offset, {
+      headers: { "x-casthub-token": state.consoleToken }
+    })
       .then(function (response) {
+        if (response.status === 401) {
+          showAuthGate("访问令牌无效或已过期，请重新输入。");
+          throw new Error("unauthorized");
+        }
         if (!response.ok) throw new Error("HTTP " + response.status);
         return response.json();
       })
       .then(function (data) {
-        state.files = Array.isArray(data.entries) ? data.entries : [];
+        const entries = Array.isArray(data.entries) ? data.entries : [];
+        state.files = append ? state.files.concat(entries) : entries;
+        state.filesOffset = offset + entries.length;
+        state.filesTotal = Number(data.total) || state.files.length;
         renderBreadcrumb();
         renderFiles();
       })
       .catch(function (error) {
-        showToast("读取文件列表失败: " + error.message, true);
+        if (error.message !== "unauthorized") showToast("读取文件列表失败: " + error.message, true);
       });
   }
 
@@ -271,6 +337,7 @@
   function renderFiles() {
     if (!state.files.length) {
       els.fileList.innerHTML = '<div class="empty">此目录为空（把视频放入 MEDIA_DIR 后刷新）</div>';
+      els.loadMoreBtn.hidden = true;
       return;
     }
     els.fileList.innerHTML = "";
@@ -306,13 +373,19 @@
       }
       els.fileList.appendChild(row);
     });
+    els.loadMoreBtn.hidden = state.filesOffset >= state.filesTotal;
+    els.loadMoreBtn.textContent = "加载更多（" + state.filesOffset + "/" + state.filesTotal + "）";
   }
+
+  els.loadMoreBtn.addEventListener("click", function () {
+    loadFiles(state.currentPath, true);
+  });
 
   els.addDeviceBtn.addEventListener("click", function () {
     const address = els.deviceAddress.value.trim();
     const token = els.deviceToken.value.trim();
     if (!address) { showToast("请输入电视 WS 地址", true); return; }
-    if (!/^\d{6}$/.test(token)) { showToast("配对码必须是 6 位数字", true); return; }
+    if (!/^\d{6,8}$/.test(token)) { showToast("配对码必须是 6-8 位数字", true); return; }
     if (send({ type: "addDevice", address: address, token: token })) {
       els.deviceAddress.value = "";
       els.deviceToken.value = "";
@@ -360,6 +433,33 @@
     });
   });
 
-  loadFiles("");
-  connectWs();
+  els.connectBtn.addEventListener("click", function () {
+    const token = els.consoleTokenInput.value.trim();
+    if (token.length < 16) {
+      els.authError.textContent = "访问令牌至少 16 个字符，请查看 console-token.txt。";
+      return;
+    }
+    state.consoleToken = token;
+    try { localStorage.setItem("casthub-token", token); } catch (error) { /* ignore */ }
+    els.authError.textContent = "";
+    if (state.ws) {
+      state.ws.onclose = null;
+      state.ws.close();
+      state.ws = null;
+    }
+    loadFiles("");
+    connectWs();
+  });
+
+  function start() {
+    if (!state.consoleToken) {
+      showAuthGate("");
+      return;
+    }
+    hideAuthGate();
+    loadFiles("");
+    connectWs();
+  }
+
+  start();
 })();

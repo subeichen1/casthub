@@ -1,5 +1,8 @@
 // DLNA 兼容模式：SSDP 发现 + AVTransport SOAP 控制 + 1s 轮询
 import { createSocket } from "node:dgram";
+import { promises as dns } from "node:dns";
+import * as net from "node:net";
+import * as os from "node:os";
 import { XMLParser } from "fast-xml-parser";
 import type { DeviceView, TvState, TvStatusPayload } from "./types";
 
@@ -8,6 +11,11 @@ const SSDP_PORT = 1900;
 const SSDP_TIMEOUT_MS = 5000;
 const POLL_INTERVAL_MS = 1000;
 const OFFLINE_FAILURE_LIMIT = 5;
+const MAX_DEVICES = 64;
+const MAX_SSDP_LOCATIONS = 64;
+const MAX_XML_BYTES = 512 * 1024;
+const MAX_SOAP_BYTES = 512 * 1024;
+const STALE_DEVICE_MS = 5 * 60 * 1000;
 const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
 const MEDIA_RENDERER = "urn:schemas-upnp-org:device:MediaRenderer:1";
 
@@ -25,6 +33,7 @@ interface DlnaRuntime {
   pollTimer: NodeJS.Timeout | null;
   polling: boolean;
   lastStatus: TvStatusPayload | null;
+  lastSeenAt: number;
 }
 
 interface SsdpResponse {
@@ -80,7 +89,7 @@ function parseHms(value: string): number {
 }
 
 function localValue(xml: string, name: string): string {
-  const regex = new RegExp(`<(?:[\\w.-]+:)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:[\\w.-]+:)?${name}>`, "i");
+  const regex = new RegExp(`<(?:(?:[\\w.-]+):)?${name}(?:\\s[^>]*)?>([\\s\\S]*?)</(?:(?:[\\w.-]+):)?${name}>`, "i");
   const match = regex.exec(xml);
   return match ? decodeXml(match[1]).trim() : "";
 }
@@ -114,7 +123,120 @@ function buildDidl(url: string, title: string, mimeType: string): string {
   );
 }
 
-function ssdpSearch(st: string): Promise<string[]> {
+function ipv4ToInt(address: string): number | null {
+  const parts = address.split(".");
+  if (parts.length !== 4) return null;
+  let result = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const value = Number(part);
+    if (value > 255) return null;
+    result = (result << 8) | value;
+  }
+  return result >>> 0;
+}
+
+function ipv4Mask(mask: string): number | null {
+  return ipv4ToInt(mask);
+}
+
+function sameSubnet(address: string, ifaceAddress: string, netmask: string): boolean {
+  const a = ipv4ToInt(address);
+  const b = ipv4ToInt(ifaceAddress);
+  const m = ipv4Mask(netmask);
+  if (a === null || b === null || m === null) return false;
+  return (a & m) === (b & m);
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.");
+}
+
+function isPrivateAddress(address: string): boolean {
+  if (isLoopbackAddress(address)) return true;
+  if (net.isIPv4(address)) {
+    const value = ipv4ToInt(address);
+    if (value === null) return false;
+    const ranges: Array<[number, number]> = [
+      [ipv4ToInt("10.0.0.0")!, ipv4ToInt("10.255.255.255")!],
+      [ipv4ToInt("172.16.0.0")!, ipv4ToInt("172.31.255.255")!],
+      [ipv4ToInt("192.168.0.0")!, ipv4ToInt("192.168.255.255")!],
+      [ipv4ToInt("100.64.0.0")!, ipv4ToInt("100.127.255.255")!]
+    ];
+    return ranges.some(([start, end]) => value >= start && value <= end);
+  }
+  if (net.isIPv6(address)) {
+    const lower = address.toLowerCase();
+    if (lower === "::1") return true;
+    // 仅 ULA（fc00::/7）视为私网；IPv6 链路本地地址不纳入 DLNA/SSRF 白名单。
+    if (lower.startsWith("fc") || lower.startsWith("fd")) return true;
+    return false;
+  }
+  return false;
+}
+
+function isLocalNetworkAddress(address: string, allowLoopback: boolean): boolean {
+  if (isLoopbackAddress(address)) return allowLoopback;
+  if (!net.isIPv4(address)) return isPrivateAddress(address);
+  for (const infos of Object.values(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (!info || info.family !== "IPv4" || info.internal) continue;
+      if (sameSubnet(address, info.address, info.netmask)) return true;
+    }
+  }
+  return false;
+}
+
+async function assertSafeUrl(raw: string, allowLoopback: boolean): Promise<URL> {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("URL 格式错误");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("只允许 http/https URL");
+  if (url.username || url.password) throw new Error("URL 不允许携带凭据");
+  if (!url.hostname) throw new Error("URL 缺少主机");
+
+  let addresses: string[];
+  if (net.isIP(url.hostname)) {
+    addresses = [url.hostname];
+  } else {
+    const resolved = await dns.lookup(url.hostname, { all: true, verbatim: true });
+    addresses = resolved.map((item) => item.address);
+  }
+  if (addresses.length === 0) throw new Error("主机无法解析");
+  if (!addresses.every((address) => isLocalNetworkAddress(address, allowLoopback))) {
+    throw new Error(`URL 主机不在局域网内: ${url.hostname}`);
+  }
+  return url;
+}
+
+async function readLimitedText(response: Response, limit: number): Promise<string> {
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > limit) {
+    throw new Error("响应体过大");
+  }
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) throw new Error("响应体过大");
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  }
+  return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
+}
+
+function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
   return new Promise((resolve) => {
     const locations = new Set<string>();
     const socket = createSocket({ type: "udp4", reuseAddr: true });
@@ -134,7 +256,9 @@ function ssdpSearch(st: string): Promise<string[]> {
     };
 
     timer = setTimeout(finish, SSDP_TIMEOUT_MS);
-    socket.on("message", (message) => {
+    socket.on("message", (message, rinfo) => {
+      if (!isLocalNetworkAddress(rinfo.address, allowLoopback)) return;
+      if (locations.size >= MAX_SSDP_LOCATIONS) return;
       const response = parseSsdpResponse(message.toString());
       if (response.location) locations.add(response.location);
     });
@@ -168,7 +292,7 @@ function ssdpSearch(st: string): Promise<string[]> {
 }
 
 function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo | null {
-  const parser = new XMLParser({ ignoreAttributes: true, removeNSPrefix: true, trimValues: true });
+  const parser = new XMLParser({ ignoreAttributes: true, removeNSPrefix: true, trimValues: true, processEntities: false });
   let parsed: unknown;
   try {
     parsed = parser.parse(xml);
@@ -177,14 +301,14 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
   }
   const root = asRecord(asRecord(parsed).root);
   const device = asRecord(root.device);
-  const udn = String(device.UDN ?? "").trim();
+  const udn = String(device.UDN ?? "").trim().slice(0, 256);
   if (!udn) return null;
   const services = asArray(asRecord(device.serviceList).service).map(asRecord);
   const avTransport = services.find((service) =>
     String(service.serviceType ?? "").includes(":service:AVTransport:")
   );
   if (!avTransport) return null;
-  const controlRaw = String(avTransport.controlURL ?? "").trim();
+  const controlRaw = String(avTransport.controlURL ?? "").trim().slice(0, 2048);
   if (!controlRaw) return null;
   let controlURL: string;
   try {
@@ -194,7 +318,7 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
   }
   return {
     id: udn,
-    deviceName: String(device.friendlyName ?? "DLNA 电视").trim() || "DLNA 电视",
+    deviceName: String(device.friendlyName ?? "DLNA 电视").trim().slice(0, 64) || "DLNA 电视",
     address: location,
     controlURL
   };
@@ -205,10 +329,18 @@ export class DlnaService {
   private discoverTimer: NodeJS.Timeout | null = null;
   private discovering = false;
   private started = false;
+  private disposed = false;
+  private discoverPromise: Promise<DlnaDeviceInfo[]> | null = null;
+  private activePolls = new Set<Promise<void>>();
+  private allowLoopback: boolean;
 
   onDevicesChanged: (() => void) | null = null;
   onTvStatus: ((deviceId: string, status: TvStatusPayload) => void) | null = null;
   onDeviceError: ((deviceId: string, message: string) => void) | null = null;
+
+  constructor(options: { allowLoopback?: boolean } = {}) {
+    this.allowLoopback = options.allowLoopback ?? process.env.DLNA_ALLOW_LOOPBACK === "1";
+  }
 
   list(): DeviceView[] {
     return Array.from(this.devices.values()).map((runtime) => ({
@@ -236,14 +368,20 @@ export class DlnaService {
   start(): void {
     if (this.started) return;
     this.started = true;
-    void this.discover();
+    this.disposed = false;
+    const first = this.discover();
+    this.discoverPromise = first;
+    void first.finally(() => {
+      if (this.discoverPromise === first) this.discoverPromise = null;
+    });
     this.discoverTimer = setInterval(() => void this.discover(), 60000);
   }
 
   async discover(): Promise<DlnaDeviceInfo[]> {
-    if (this.discovering) return [];
+    if (this.disposed || this.discovering) return [];
     this.discovering = true;
     const found: DlnaDeviceInfo[] = [];
+    const seenIds = new Set<string>();
     try {
       const seed = (process.env.DLNA_SEED ?? "")
         .split(",")
@@ -254,21 +392,30 @@ export class DlnaService {
           const info = await this.loadDevice(location);
           if (info) {
             found.push(info);
+            seenIds.add(info.id);
             this.upsert(info, "DLNA_SEED");
           }
         }
+        if (this.disposed) return found;
+        this.pruneStale(seenIds);
         return found;
       }
 
-      const responses = await Promise.all([ssdpSearch(MEDIA_RENDERER), ssdpSearch("ssdp:all")]);
-      const locations = Array.from(new Set(responses.flat()));
+      const responses = await Promise.all([
+        ssdpSearch(MEDIA_RENDERER, this.allowLoopback),
+        ssdpSearch("ssdp:all", this.allowLoopback)
+      ]);
+      const locations = Array.from(new Set(responses.flat())).slice(0, MAX_SSDP_LOCATIONS);
       for (const location of locations) {
         const info = await this.loadDevice(location);
         if (!info) continue;
         found.push(info);
+        seenIds.add(info.id);
         this.upsert(info, "DLNA_DISCOVERED");
       }
+      if (this.disposed) return found;
       if (found.length === 0) console.log("[dlna] SSDP 扫描完成，未发现 MediaRenderer");
+      this.pruneStale(seenIds);
       return found;
     } catch (error) {
       console.error(`[dlna] 发现失败: ${(error as Error).message}`);
@@ -279,6 +426,7 @@ export class DlnaService {
   }
 
   async play(id: string, url: string, title: string, mimeType: string): Promise<void> {
+    if (this.disposed) throw new Error("DLNA 服务已关闭");
     const runtime = this.devices.get(id);
     if (!runtime) throw new Error("DLNA 设备不存在");
     const active =
@@ -305,6 +453,7 @@ export class DlnaService {
     await this.soap(runtime, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>");
     runtime.online = true;
     runtime.failures = 0;
+    runtime.lastSeenAt = Date.now();
     runtime.lastStatus = { state: "buffering", positionMs: 0, durationMs: runtime.lastStatus?.durationMs ?? 0 };
     this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     this.startPolling(runtime);
@@ -312,6 +461,7 @@ export class DlnaService {
   }
 
   async control(id: string, action: "pause" | "resume" | "stop" | "seek", positionMs?: number): Promise<boolean> {
+    if (this.disposed) return false;
     const runtime = this.devices.get(id);
     if (!runtime) return false;
     if (action === "seek") {
@@ -344,39 +494,68 @@ export class DlnaService {
     return true;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    this.disposed = true;
+    this.started = false;
     if (this.discoverTimer) clearInterval(this.discoverTimer);
     this.discoverTimer = null;
     for (const runtime of this.devices.values()) {
       if (runtime.pollTimer) clearInterval(runtime.pollTimer);
       runtime.pollTimer = null;
     }
+    const pendingDiscover = this.discoverPromise;
+    if (pendingDiscover) await Promise.allSettled([pendingDiscover]);
+    await Promise.allSettled(Array.from(this.activePolls));
     this.devices.clear();
   }
 
   private async loadDevice(location: string): Promise<DlnaDeviceInfo | null> {
+    let safeLocation: URL;
     try {
-      const response = await fetch(location, { signal: AbortSignal.timeout(3000) });
+      safeLocation = await assertSafeUrl(location, this.allowLoopback);
+    } catch (error) {
+      console.error(`[dlna] 拒绝设备地址 ${location}: ${(error as Error).message}`);
+      return null;
+    }
+    try {
+      const response = await fetch(safeLocation, { signal: AbortSignal.timeout(5000), redirect: "manual" });
       if (!response.ok) {
-        console.error(`[dlna] device.xml HTTP ${response.status}: ${location}`);
+        console.error(`[dlna] device.xml HTTP ${response.status}: ${safeLocation.toString()}`);
         return null;
       }
-      const xml = await response.text();
-      return parseDeviceDescription(xml, location);
+      const xml = await readLimitedText(response, MAX_XML_BYTES);
+      return parseDeviceDescription(xml, safeLocation.toString());
     } catch (error) {
-      console.error(`[dlna] 读取 device.xml 失败 ${location}: ${(error as Error).message}`);
+      console.error(`[dlna] 读取 device.xml 失败 ${safeLocation.toString()}: ${(error as Error).message}`);
       return null;
     }
   }
 
+  private pruneStale(seenIds: Set<string>): void {
+    const now = Date.now();
+    for (const [id, runtime] of this.devices) {
+      if (!seenIds.has(id) && !runtime.online && now - runtime.lastSeenAt > STALE_DEVICE_MS) {
+        if (runtime.pollTimer) clearInterval(runtime.pollTimer);
+        this.devices.delete(id);
+        console.log(`[dlna] 清理离线设备 ${runtime.info.deviceName}`);
+      }
+    }
+  }
+
   private upsert(info: DlnaDeviceInfo, source: "DLNA_DISCOVERED" | "DLNA_SEED"): void {
+    if (this.disposed) return;
     const existing = this.devices.get(info.id);
     if (existing) {
       existing.info = info;
+      existing.lastSeenAt = Date.now();
       if (!existing.online) {
         existing.online = true;
         this.emitDevices();
       }
+      return;
+    }
+    if (this.devices.size >= MAX_DEVICES) {
+      console.warn(`[dlna] 设备数量达到上限 ${MAX_DEVICES}，忽略 ${info.deviceName}`);
       return;
     }
     this.devices.set(info.id, {
@@ -385,13 +564,15 @@ export class DlnaService {
       failures: 0,
       pollTimer: null,
       polling: false,
-      lastStatus: null
+      lastStatus: null,
+      lastSeenAt: Date.now()
     });
     console.log(`${source} ${info.deviceName} ${info.controlURL}`);
     this.emitDevices();
   }
 
   private async soap(runtime: DlnaRuntime, action: string, inner: string): Promise<string> {
+    const controlUrl = await assertSafeUrl(runtime.info.controlURL, this.allowLoopback);
     const body =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
@@ -401,8 +582,9 @@ export class DlnaService {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
     try {
-      const response = await fetch(runtime.info.controlURL, {
+      const response = await fetch(controlUrl, {
         method: "POST",
+        redirect: "manual",
         headers: {
           "Content-Type": 'text/xml; charset="utf-8"',
           SOAPACTION: `"${AV_TRANSPORT}#${action}"`
@@ -410,22 +592,31 @@ export class DlnaService {
         body,
         signal: controller.signal
       });
-      const text = await response.text();
-      if (!response.ok) throw new Error(`SOAP ${action} HTTP ${response.status}`);
-      return text;
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`SOAP ${action} HTTP ${response.status}`);
+      }
+      return await readLimitedText(response, MAX_SOAP_BYTES);
     } finally {
       clearTimeout(timer);
     }
   }
 
   private startPolling(runtime: DlnaRuntime): void {
-    if (runtime.pollTimer) return;
-    runtime.pollTimer = setInterval(() => void this.poll(runtime), POLL_INTERVAL_MS);
-    void this.poll(runtime);
+    if (this.disposed || runtime.pollTimer) return;
+    runtime.pollTimer = setInterval(() => this.runPoll(runtime), POLL_INTERVAL_MS);
+    this.runPoll(runtime);
+  }
+
+  private runPoll(runtime: DlnaRuntime): void {
+    const promise = this.poll(runtime).finally(() => {
+      this.activePolls.delete(promise);
+    });
+    this.activePolls.add(promise);
   }
 
   private async poll(runtime: DlnaRuntime): Promise<void> {
-    if (runtime.polling) return;
+    if (this.disposed || runtime.polling || this.devices.get(runtime.info.id) !== runtime) return;
     runtime.polling = true;
     try {
       let transportXml = "";
@@ -445,6 +636,7 @@ export class DlnaService {
       }
       if (!anySuccess) throw new Error("SOAP 轮询失败");
       runtime.failures = 0;
+      runtime.lastSeenAt = Date.now();
       if (!runtime.online) {
         runtime.online = true;
         this.emitDevices();

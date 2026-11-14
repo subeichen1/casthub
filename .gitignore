@@ -5,6 +5,8 @@ server/media/*
 !server/media/.gitkeep
 *.log
 config.json
+console-token.txt
+.audit-*.json
 *.apk
 *.exe
 .DS_Store

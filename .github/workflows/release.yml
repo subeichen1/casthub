@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Build signed Windows portable
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - name: Install dependencies
+        run: cd server; npm ci
+      - name: Build server
+        run: cd server; npm run build
+      - name: Decode code-signing certificate
+        shell: pwsh
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CERT_PFX_BASE64)) {
+            throw '缺少仓库 Secret WINDOWS_CERT_PFX_BASE64，拒绝发布未签名安装包。'
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'casthub-signing.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+      - name: Build portable executable
+        working-directory: server
+        env:
+          CSC_LINK: ${{ runner.temp }}/casthub-signing.pfx
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: npm run dist
+      - name: Verify Authenticode signature
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature -LiteralPath 'server/release/CastHub.exe'
+          if ($sig.Status -ne 'Valid') {
+            throw "CastHub.exe 签名无效：$($sig.Status)"
+          }
+          Write-Host "签名者：$($sig.SignerCertificate.Subject)"
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: server/release/CastHub.exe
+          retention-days: 7
+
+  android:
+    name: Build signed Android TV APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+      - name: Decode release keystore
+        env:
+          CASTHUB_KEYSTORE_BASE64: ${{ secrets.CASTHUB_KEYSTORE_BASE64 }}
+          CASTHUB_KEYSTORE_PASSWORD: ${{ secrets.CASTHUB_KEYSTORE_PASSWORD }}
+          CASTHUB_KEY_ALIAS: ${{ secrets.CASTHUB_KEY_ALIAS }}
+          CASTHUB_KEY_PASSWORD: ${{ secrets.CASTHUB_KEY_PASSWORD }}
+        run: |
+          if [ -z "$CASTHUB_KEYSTORE_BASE64" ]; then
+            echo '缺少 Secret CASTHUB_KEYSTORE_BASE64，拒绝发布未签名 APK。' >&2
+            exit 1
+          fi
+          KEYSTORE="$RUNNER_TEMP/casthub-release.keystore"
+          printf '%s' "$CASTHUB_KEYSTORE_BASE64" | base64 -d > "$KEYSTORE"
+          echo "CASTHUB_KEYSTORE_FILE=$KEYSTORE" >> "$GITHUB_ENV"
+          echo "CASTHUB_KEYSTORE_PASSWORD=$CASTHUB_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "CASTHUB_KEY_ALIAS=$CASTHUB_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "CASTHUB_KEY_PASSWORD=$CASTHUB_KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Build release APK
+        run: |
+          cd tv-app
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace
+      - name: Verify APK signature
+        run: |
+          APKSIGNER="$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -n "$APKSIGNER"
+          "$APKSIGNER" verify --print-certs tv-app/app/build/outputs/apk/release/app-release.apk
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: tv-app/app/build/outputs/apk/release/app-release.apk
+          retention-days: 7
+
+  source:
+    name: Package source archive
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Create archive
+        run: git archive --format=tar.gz --prefix=casthub/ -o casthub-src.tar.gz HEAD
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: source
+          path: casthub-src.tar.gz
+          retention-days: 7
+
+  publish:
+    name: Publish release assets
+    needs: [windows, android, source]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Rename APK
+        run: mv dist/app-release.apk dist/CastHub-TV.apk
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum CastHub.exe CastHub-TV.apk casthub-src.tar.gz > checksums.txt
+          cat checksums.txt
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/CastHub.exe
+            dist/CastHub-TV.apk
+            dist/casthub-src.tar.gz
+            dist/checksums.txt

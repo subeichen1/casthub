@@ -4,12 +4,12 @@
 
 ## 通道 A：中枢 ↔ 电视（电视端为 WS 服务端，端口 9417，中枢为客户端）
 
-连接建立后，中枢必须发送 hello；token 错误时电视端以 close code 4001 断开。
+连接建立后，中枢必须发送 hello；token 错误时电视端以 close code 4001 断开。协议版本为 `1`，中枢 `hello` 携带 `version: 1`，电视端 `helloAck` 必须回传 `version`；中枢或电视端发现版本不兼容时以 close code 4004 断开。单条消息超过 64 KiB 时电视端以 close code 4002 断开；同一 IP 在 60 秒内认证失败 10 次后以 close code 4003 断开。
 
 | 方向 | type | 载荷 |
 |---|---|---|
-| 中枢→电视 | hello | {token, clientId}（token 错误则电视以 close code 4001 断开） |
-| 电视→中枢 | helloAck | {ok, deviceName} |
+| 中枢→电视 | hello | {token, clientId, version: 1}（token 错误则电视以 close code 4001 断开） |
+| 电视→中枢 | helloAck | {ok, deviceName, version: 1} |
 | 中枢→电视 | play | {url, title, mimeType} |
 | 中枢→电视 | pause / resume / stop | {} |
 | 中枢→电视 | seek | {positionMs} |
@@ -18,6 +18,8 @@
 | 电视→中枢 | error | {code, message} |
 
 ## 通道 B：控制台 ↔ 中枢（9420，路径 /console）
+
+连接必须携带控制台令牌（`?token=` 或 `x-casthub-token` 头），并满足同源 `Origin` 校验；否则以 close code 1008 断开。单条消息上限 64 KiB，每连接 10 秒最多 120 条消息，全局最多 32 个控制台连接。
 
 | 方向 | type | 载荷 |
 |---|---|---|
@@ -41,9 +43,10 @@
 
 ## REST
 
-`GET /api/files?path=` → `{entries: [{name, path, isDir, size, mimeType}]}`
+`GET /api/files?path=&limit=&offset=` 需要 `x-casthub-token` 或 `?token=`，返回 `{entries: [{name, path, isDir, size, mimeType}], total, offset, limit, hasMore}`；`limit` 默认 200、最大 500。符号链接条目不会出现在列表中。
 
 ## 流媒体
 
 电视端播放器 HTTP 直拉 `http://<中枢IP>:9420/media/...`，中枢必须支持 Range 请求（拖进度依赖它）。
-播放地址默认由控制台连接的 Host 头推导（如 `http://192.168.1.5:9420`），环境变量 `PUBLIC_BASE_URL` 可覆盖。
+
+`/media` 只接受带 `expires` 与 `sig` 的 HMAC 签名 URL（默认 24 小时有效），或控制台令牌；签名 URL 由中枢在 `cast` 时基于 `PUBLIC_BASE_URL` 生成。`PUBLIC_BASE_URL` 未显式配置时，中枢自动探测非回环局域网 IPv4；`MEDIA_BASE` 日志行会打印实际使用的基址。

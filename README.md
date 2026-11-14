@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.1.0**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.1.1**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -28,7 +28,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 | **本地投屏** | 浏览器控制台浏览媒体库，一键把视频投到电视；支持播放、暂停、拖动进度和停止。 |
 | **DLNA 兼容** | 电视装不了 App 时，自动发现并驱动电视自带的 DLNA/UPnP 播放器。 |
 | **Windows 桌面端** | 免安装 portable 版，双击即用，可放 U 盘携带；支持同目录 `config.json`。 |
-| **Android TV 客户端** | Kotlin + Media3/ExoPlayer 原生播放，支持遥控器操作与 6 位配对码。 |
+| **Android TV 客户端** | Kotlin + Media3/ExoPlayer 原生播放，支持遥控器操作与 8 位安全配对码。 |
 | **局域网直连** | PC 与电视直接传输媒体流，不经过云端；支持 HTTP Range，进度拖动可靠。 |
 | **零构建控制台** | 原生 HTML/CSS/JavaScript，无需前端构建工具，打开浏览器即可使用。 |
 
@@ -38,7 +38,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 | --- | --- |
 | PC 中枢（桌面版） | Windows 10 / 11，无需安装 Node.js |
 | PC 中枢（源码 / 部署脚本） | Node.js 20+、npm，Windows / macOS / Linux |
-| Android TV 客户端 | Android 5.0（API 21）及以上，约 8 MB 存储空间 |
+| Android TV 客户端 | Android 6.0（API 23）及以上，约 8 MB 存储空间 |
 | 网络 | PC 与电视连接同一局域网，路由器未开启 AP 隔离 |
 
 ## 快速开始
@@ -53,7 +53,7 @@ $p = Join-Path $env:TEMP 'CastHub-install.ps1'; iwr -UseBasicParsing https://git
 
 安装脚本会自动完成以下步骤：
 
-1. 从最新 Release 下载 `CastHub.exe`；
+1. 从最新 Release 下载 `CastHub.exe`，并校验 SHA-256（可用 `-Sha256` 指定官方值，或用 `-RequireSignature` 强制要求 Authenticode 签名）；
 2. 安装到 `%LOCALAPPDATA%\CastHub`；
 3. 创建桌面和开始菜单快捷方式；
 4. 创建默认媒体目录 `%USERPROFILE%\Videos\CastHub`；
@@ -77,15 +77,15 @@ git clone --depth 1 https://github.com/subeichen1/casthub.git && cd casthub/serv
 curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/install.sh | bash
 ```
 
-脚本会把 CastHub 部署到 `~/.local/share/casthub`，安装依赖并编译服务端，默认安装完成后直接启动；也可稍后手动执行 `~/.local/share/casthub/start-casthub.sh`。可通过环境变量 `CASTHUB_DIR`、`CASTHUB_MEDIA_DIR`、`CASTHUB_PORT` 覆盖默认路径和端口。
+脚本会从最新 Release 下载源码包，并用 `checksums.txt` 校验 SHA-256（也可用 `CASTHUB_SHA256` 指定），然后部署到 `~/.local/share/casthub`、安装依赖并编译服务端，默认安装完成后直接启动；也可稍后手动执行 `~/.local/share/casthub/start-casthub.sh`。可通过环境变量 `CASTHUB_DIR`、`CASTHUB_MEDIA_DIR`、`CASTHUB_PORT` 覆盖默认路径和端口。
 
 ### 方式四：下载 Android TV 客户端
 
-从 [Releases](https://github.com/subeichen1/casthub/releases/latest) 下载 `app-debug.apk`，通过 U 盘安装到电视。详细步骤见 [电视端 App 安装](#电视端-app-安装tcl-u-盘-sideload)。
+从 [Releases](https://github.com/subeichen1/casthub/releases/latest) 下载已签名的 `CastHub-TV.apk`，并用 `checksums.txt` 核对 SHA-256 后通过 U 盘安装到电视。详细步骤见 [电视端 App 安装](#电视端-app-安装tcl-u-盘-sideload)。
 
-### 方式五：AI Agent / 无人值守
+### 方式五：自动化 / 无人值守（非 AI 功能）
 
-AI Agent、CI 或无图形环境建议使用“只安装、不启动、不创建快捷方式”的模式：
+这里的“AI Agent”只是指自动化安装场景，项目本身不包含 AI/ML 功能。CI 或无图形环境建议使用“只安装、不启动、不创建快捷方式”的模式：
 
 **Windows（PowerShell）**
 
@@ -111,7 +111,7 @@ curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/instal
 
 控制台包含三个主要区域：
 
-- **设备**：输入电视显示的 `ws://<电视 IP>:9417` 和 6 位配对码，添加并查看设备在线状态；
+- **设备**：输入电视显示的 `ws://<电视 IP>:9417` 和 8 位配对码，添加并查看设备在线状态；
 - **媒体库**：浏览 `MEDIA_DIR` 下的视频文件，显示文件名、类型与大小；
 - **播放控制**：显示当前播放状态、进度条、暂停/继续和停止按钮。
 
@@ -141,7 +141,7 @@ casthub/
 │   └── scripts/             # fake-tv / e2e / fake-dlna / e2e-dlna
 ├── tv-app/                  # Android TV App（Kotlin + Media3）
 │   └── app/src/main/java/io/casthub/tv/
-│       ├── MainActivity.kt  # 配对屏：本机 WS 地址 + 6 位配对码
+│       ├── MainActivity.kt  # 配对屏：本机 WS 地址 + 8 位配对码
 │       ├── TvWsServer.kt    # 9417 WS 服务端 + 协议分发
 │       ├── PlayerActivity.kt# ExoPlayer 全屏播放
 │       └── Protocol.kt      # 消息数据类
@@ -159,7 +159,10 @@ casthub/
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MEDIA_DIR` | `server/media` | 媒体根目录，支持绝对路径；不存在时自动创建。 |
-| `PUBLIC_BASE_URL` | 自动推导 | 覆盖下发给电视的媒体基址，例如 `http://192.168.1.5:9420`。 |
+| `PUBLIC_BASE_URL` | 自动探测局域网 IPv4 | 覆盖下发给电视的媒体基址，例如 `http://192.168.1.5:9420`。默认从网卡探测非回环 IPv4。 |
+| `CONSOLE_TOKEN` | 自动生成并持久化 | 控制台访问令牌；未设置时优先读取 config.json，否则写入 `CASTHUB_CONFIG_DIR/console-token.txt`。 |
+| `CASTHUB_CONFIG_DIR` | 进程工作目录 | `config.json` 与 `console-token.txt` 的存放目录。 |
+| `CASTHUB_LOG_FILE` | 空（输出到终端） | 指定后写入带轮转的服务端日志文件。 |
 | `PORT` | `9420` | 中枢 HTTP/WebSocket 端口。 |
 | `DLNA_SEED` | 空 | 逗号分隔的 `device.xml` URL，用于跳过 SSDP 直接注入 DLNA 设备。 |
 
@@ -186,35 +189,35 @@ Windows 电脑直接双击 `CastHub.exe` 即可启动，免安装、可放 U 盘
 APK 本地构建产物路径：
 
 ```text
-tv-app/app/build/outputs/apk/debug/app-debug.apk
+tv-app/app/build/outputs/apk/release/app-release.apk
 ```
 
-构建产物不随 git 仓库分发，请到本仓库的 **Releases** 页下载 `app-debug.apk`（当前版本：6,437,094 字节，SHA-256 `87816EA91C276A63164A19E66A0676B60F95174C85AC26E16CA9A8689FBD0183`）。如需重新构建，请在一台装有 Android Studio 的电脑上：
+构建产物不随 git 仓库分发。请到本仓库的 **Releases** 页下载已签名的 `CastHub-TV.apk`，并用同页 `checksums.txt` 核对 SHA-256。Release 构建需要签名材料（`CASTHUB_KEYSTORE_FILE` 等环境变量），没有签名材料时本地只会产出 unsigned APK，不能用于正式分发。如需重新构建，请在一台装有 Android Studio 的电脑上：
 
 1. 用 Android Studio 打开 `tv-app` 目录，等待 Gradle Sync 完成（JDK 17，AGP 8.2，Kotlin 1.9）。
 2. 菜单 Build → Build App Bundle(s) / APK(s) → Build APK(s)。
-3. 产物即位于上面的路径。
+3. 产物即位于上面的路径；正式发布请使用 `.github/workflows/release.yml` 注入签名材料构建。
 
 安装到 TCL 电视：
 
-1. 把 `app-debug.apk` 复制到 U 盘（FAT32 即可）。
+1. 把已签名的 `CastHub-TV.apk` 复制到 U 盘（FAT32 即可）；`app-debug.apk` 仅用于本地调试，不要分发。
 2. U 盘插到电视 USB 口，用电视自带的「媒体中心 / 文件管理」找到 APK。
 3. 在电视上允许未知来源安装：设置 → 系统 → 安全 → 允许未知来源安装（不同 TCL 固件菜单名可能略有差异），然后安装。
-4. 打开「CastHub TV」应用，屏幕会显示本机 WebSocket 地址和 6 位配对码。
+4. 打开「CastHub TV」应用，屏幕会显示本机 WebSocket 地址和 8 位配对码。
 
 ## 使用流程
 
-1. 启动 PC 中枢，确认终端出现 `CastHub 已启动 http://0.0.0.0:9420`。
-2. 在浏览器打开 `http://<PC 局域网 IP>:9420`（不要使用 `localhost` 或 `127.0.0.1`）。
-3. 打开电视端 App，记下 `ws://<电视 IP>:9417` 和 6 位配对码。
+1. 启动 PC 中枢，终端会显示本地控制台地址（默认 `http://127.0.0.1:9420`）和 `MEDIA_BASE` 局域网地址。
+2. 双击桌面版时控制台会自动携带令牌打开；用浏览器手动访问时打开 `http://<PC 局域网 IP>:9420`，并把中枢生成的 `console-token.txt` 内容填入令牌输入框。
+3. 打开电视端 App，记下 `ws://<电视 IP>:9417` 和 8 位配对码。
 4. 在控制台「设备」区域填入地址和配对码，点「添加」；设备显示「在线」后进入下一步。
 5. 在「媒体库」选择视频，点「投屏」；在「播放控制」拖动进度条可 seek，暂停/继续和停止即时生效。
 6. 遥控器操作：确认键播放/暂停，左右键 ±10 秒，返回键停止并回配对屏。
 
 ## 真机 / 模拟器验证清单
 
-- [ ] Android Studio 能 Sync 并构建出 `tv-app/app/build/outputs/apk/debug/app-debug.apk`。
-- [ ] `adb install -r tv-app/app/build/outputs/apk/debug/app-debug.apk` 成功。
+- [ ] Android Studio 能 Sync 并构建出 `tv-app/app/build/outputs/apk/release/app-release.apk`（或使用 CI 的 debug 构建产物做功能验证）。
+- [ ] `adb install -r tv-app/app/build/outputs/apk/release/app-release.apk` 成功（需已签名）。
 - [ ] 启动 App 后 `adb logcat` 出现 `WS_LISTENING ws://<局域网 IP>:9417`。
 - [ ] 模拟器场景执行 `adb reverse tcp:9417 tcp:9417`，控制台添加 `ws://127.0.0.1:9417` + 配对码，设备显示在线。
 - [ ] 模拟器场景以 `PUBLIC_BASE_URL=http://10.0.2.2:9420` 启动中枢，投屏后 `adb logcat` 出现 `STATE playing`。
@@ -260,6 +263,7 @@ npm start
 cd server
 npm install
 npm run build        # TypeScript 类型检查 + 编译到 dist/
+npm run typecheck    # 仅类型检查
 npm run e2e          # fake-tv + 中枢，完整 App 投屏流程
 node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 ```
@@ -274,17 +278,17 @@ node server/scripts/fake-tv.mjs
 Range 验证示例：
 
 ```bash
-curl -s -D - -o /dev/null -r 0-1023 http://127.0.0.1:9420/media/test.mp4
-curl -s -D - -o /dev/null http://127.0.0.1:9420/media/test.mp4
-curl 'http://127.0.0.1:9420/media/../package.json'   # 应返回 403
+# /api/files 与 /media 都需要控制台令牌；令牌见 console-token.txt
+curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
+curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Ubuntu + Node.js 20 下执行 `e2e.mjs` 与 `e2e-dlna.mjs`。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和两条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 
 1. **Windows 首次运行弹防火墙授权必须允许（端口 9420 入站）**。不允许的话，浏览器可能能打开控制台，但电视拉不到媒体流。
-2. **控制台必须用 PC 的局域网 IP 打开，严禁 localhost / 127.0.0.1**。否则中枢推导出的 play URL 是 `http://127.0.0.1:9420/...`，电视端访问的是它自己，拉不到流。
+2. **手动打开控制台时建议使用 PC 的局域网 IP**（`http://<PC 局域网 IP>:9420`）；桌面版会自动打开本地控制台并通过 `PUBLIC_BASE_URL`/网卡探测生成电视可访问的媒体地址。若电视仍提示无法播放，请检查 `MEDIA_BASE` 是否是 PC 的局域网 IP。
 3. **电视与 PC 必须同网段**。路由器 AP 隔离 / 访客网络会导致彼此连不上；请关闭 AP 隔离或使用同一普通 Wi-Fi。
 4. **有画面无声音 = 片源大概率是 DTS 音轨**。属已知边界，不是 bug；换 AAC 音轨的片源即可。
 5. **DLNA 搜索不到设备**。确认电视与 PC 同网段，必要时用 `DLNA_SEED` 注入 `device.xml` 地址。
@@ -292,9 +296,9 @@ CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Ubuntu + Node.js 
 ## 已知边界
 
 - 无数据库、无转码、无多用户，状态存内存；中枢重启后设备列表清空。
-- 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 6 位码；DLNA 兼容模式作为降级路径。
+- 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 8 位码；DLNA 兼容模式作为降级路径。
 - DTS 等电视不支持的音轨只能换片源，本项目不转码。
-- 本项目面向家庭局域网，不建议直接暴露到公网。
+- 本项目面向家庭局域网，不建议直接暴露到公网。控制面使用控制台令牌鉴权，媒体流使用 HMAC 签名 URL；信任边界与安全验收要求见 [SECURITY.md](SECURITY.md)。
 
 ## 文档
 

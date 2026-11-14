@@ -3,6 +3,9 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// release 签名材料只从 CI/本机构建环境注入，不写入仓库。
+val releaseKeystore = System.getenv("CASTHUB_KEYSTORE_FILE")
+
 android {
     namespace = "io.casthub.tv"
     compileSdk = 34
@@ -11,14 +14,28 @@ android {
         applicationId = "io.casthub.tv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
+    }
+
+    signingConfigs {
+        if (!releaseKeystore.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("CASTHUB_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CASTHUB_KEY_ALIAS")
+                keyPassword = System.getenv("CASTHUB_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // 未提供签名材料时仍可产出 unsigned APK 供本地检查；正式发布必须注入环境变量。
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

@@ -12,6 +12,9 @@ param(
     [string]$InstallDir = (Join-Path $env:LOCALAPPDATA 'CastHub'),
     [string]$MediaDir = '',
     [string]$SourceExe = '',
+    [string]$Sha256 = '',
+    [switch]$AllowUnsigned,
+    [switch]$RequireSignature,
     [switch]$NoShortcuts,
     [switch]$NoLaunch
 )
@@ -26,6 +29,36 @@ function Write-Step([string]$Message) {
 function Fail([string]$Message) {
     Write-Host "错误：$Message" -ForegroundColor Red
     exit 1
+}
+
+function Get-Sha256Hex([string]$Path) {
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Read-ChecksumForFile([string]$ChecksumText, [string]$FileName) {
+    foreach ($line in ($ChecksumText -split "`r?`n")) {
+        if ($line -match '^\s*([A-Fa-f0-9]{64})\s+\*?([^\s]+)\s*$' -and $Matches[2] -eq $FileName) {
+            return $Matches[1].ToLowerInvariant()
+        }
+    }
+    return ''
+}
+
+function Assert-Checksum([string]$Path, [string]$Expected, [string]$Label) {
+    $actual = Get-Sha256Hex $Path
+    if ($actual -ne $Expected.ToLowerInvariant()) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+        Fail "$Label 校验失败：期望 $Expected，实际 $actual"
+    }
+    Write-Step "$Label SHA-256 校验通过：$actual"
+}
+
+function Assert-Authenticode([string]$Path) {
+    $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    if ($signature.Status -ne 'Valid') {
+        Fail "CastHub.exe 数字签名无效（$($signature.Status)），请从官方 Release 重新下载。"
+    }
+    Write-Step "数字签名校验通过：$($signature.SignerCertificate.Subject)"
 }
 
 Write-Host ''
@@ -61,10 +94,17 @@ New-Item -ItemType Directory -Force -Path $MediaDir | Out-Null
 $exePath = Join-Path $InstallDir 'CastHub.exe'
 $configPath = Join-Path $InstallDir 'config.json'
 
+$expectedHash = $Sha256
 if (-not [string]::IsNullOrWhiteSpace($SourceExe)) {
     Write-Step "使用本地安装包：$SourceExe"
     if (-not (Test-Path -LiteralPath $SourceExe -PathType Leaf)) {
         Fail "找不到安装包：$SourceExe"
+    }
+    if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+        $sidecar = "$SourceExe.sha256"
+        if (Test-Path -LiteralPath $sidecar -PathType Leaf) {
+            $expectedHash = Read-ChecksumForFile (Get-Content -LiteralPath $sidecar -Raw) (Split-Path -Leaf $SourceExe)
+        }
     }
     Copy-Item -LiteralPath $SourceExe -Destination $exePath -Force
 } else {
@@ -75,6 +115,30 @@ if (-not [string]::IsNullOrWhiteSpace($SourceExe)) {
     } catch {
         Fail "下载失败：$($_.Exception.Message)"
     }
+    if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+        $checksumUrl = 'https://github.com/subeichen1/casthub/releases/latest/download/checksums.txt'
+        try {
+            $checksums = (Invoke-WebRequest -Uri $checksumUrl -UseBasicParsing).Content
+            $expectedHash = Read-ChecksumForFile $checksums 'CastHub.exe'
+        } catch {
+            Write-Warning "无法下载 checksums.txt：$($_.Exception.Message)"
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($expectedHash)) {
+    if (-not $AllowUnsigned) {
+        Fail '无法取得 CastHub.exe 的 SHA-256 校验和。请通过 -Sha256 指定官方校验值，或在明确了解风险时使用 -AllowUnsigned。'
+    }
+    Write-Warning '未校验安装包哈希（-AllowUnsigned）。'
+} else {
+    Assert-Checksum $exePath $expectedHash 'CastHub.exe'
+}
+
+if ($RequireSignature) {
+    Assert-Authenticode $exePath
+} elseif ((Get-AuthenticodeSignature -LiteralPath $exePath).Status -ne 'Valid') {
+    Write-Warning 'CastHub.exe 未通过 Authenticode 签名校验；请核对 SHA-256 或使用 -RequireSignature 强制要求签名。'
 }
 
 Unblock-File -Path $exePath -ErrorAction SilentlyContinue
