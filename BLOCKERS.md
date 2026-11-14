@@ -36,8 +36,8 @@
 
 ## Phase 8K — v0.1.1 正式 Release（blocked，2026-11-15）
 
-- 代码修复已完成并推送：main HEAD `9c4b7b70dedb453d5a30ab9ca4754e5f6592a7dd`（`fix: complete CastHub security and reliability remediation (v0.1.1)`）。
-- GitHub Actions CI run #8（id `43615304471`）针对该提交完成，结论 `success`。
+- 代码修复已完成并推送：修复提交 `9c4b7b70dedb453d5a30ab9ca4754e5f6592a7dd`（`fix: complete CastHub security and reliability remediation (v0.1.1)`）；当前 main HEAD 为文档提交 `2f0d6e998a63f407e8c8fa239137cfabc9d4a483`（`docs: record v0.1.1 release signing blocker`）。
+- GitHub Actions CI run #8（id `43615304471`）针对修复提交完成，结论 `success`；文档提交后的 CI run #9（id `43615719707`）同样为 `success`。
 - 本地回归（2026-11-14）：typecheck / lint / build / npm audit / e2e 10/10 / e2e-dlna 9/9 / perf smoke 全部通过；详见 `REPORT.md` 与 `.dsh-pilot` 日志。
 - 发布阻塞：仓库 Actions secrets 数量为 0；本机未找到 `.pfx` / `.p12` / `.jks` / `.keystore` 或代码签名证书。`.github/workflows/release.yml` 会在缺少 `WINDOWS_CERT_PFX_BASE64` / `CASTHUB_KEYSTORE_BASE64` 时主动失败，属于预期保护。
 - 待人工提供：Windows PFX 与密码、Android release keystore 与密码/alias；配置 6 个 Secrets 后创建并推送 `v0.1.1` tag，验收 windows / android / source / publish jobs。
