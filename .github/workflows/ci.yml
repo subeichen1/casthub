@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  e2e:
+    name: E2E (Node 20)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: cd server && npm install
+      - name: E2E (App casting)
+        run: cd server && node scripts/e2e.mjs
+      - name: E2E (DLNA fallback)
+        run: cd server && node scripts/e2e-dlna.mjs
