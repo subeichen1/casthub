@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CastHub 启动失败</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: #10161d;
+      color: #e8edf2;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    }
+    .card {
+      width: min(620px, calc(100vw - 48px));
+      padding: 34px 38px;
+      border: 1px solid #2d3946;
+      border-radius: 16px;
+      background: #17212b;
+      box-shadow: 0 18px 60px rgba(0, 0, 0, .35);
+    }
+    .icon { font-size: 34px; line-height: 1; }
+    h1 { margin: 14px 0 10px; font-size: 24px; }
+    p { margin: 0 0 14px; line-height: 1.8; color: #b9c5d1; }
+    .message {
+      margin: 20px 0;
+      padding: 14px 16px;
+      border-left: 4px solid #e5a23b;
+      border-radius: 8px;
+      background: #202c38;
+      color: #ffd58a;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    .hint { font-size: 13px; color: #8fa0b1; }
+    button {
+      margin-top: 6px;
+      padding: 10px 22px;
+      border: 0;
+      border-radius: 9px;
+      background: #2f81f7;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    button:hover { background: #4b95ff; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="icon">⚠️</div>
+    <h1>CastHub 启动失败</h1>
+    <p id="message" class="message">端口 9420 被占用，请关闭占用程序后重试</p>
+    <p>请关闭占用端口的程序（或本程序的另一个实例），然后重新打开 CastHub。</p>
+    <p class="hint">如仍无法启动，请查看 exe 所在目录下的 casthub.log。</p>
+    <button type="button" onclick="window.close()">退出</button>
+  </main>
+  <script>
+    const message = new URLSearchParams(location.search).get("message");
+    if (message) document.getElementById("message").textContent = message;
+  </script>
+</body>
+</html>

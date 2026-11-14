@@ -102,7 +102,7 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const dlna = new DlnaService();
 
   await registerFileRoutes(app, resolved.mediaDir);
-  attachConsoleWs(app, devices, resolved.mediaDir, dlna);
+  const consoleWs = attachConsoleWs(app, devices, resolved.mediaDir, dlna);
 
   // 控制台静态页面（无构建步骤）
   app.get("/", async (_request, reply) => {
@@ -146,6 +146,8 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
     closed = true;
     dlna.dispose();
     devices.dispose();
+    for (const client of consoleWs.clients) client.terminate();
+    await new Promise<void>((resolve) => consoleWs.close(() => resolve()));
     await app.close();
     if (previousPublicBaseUrl === undefined) {
       delete process.env.PUBLIC_BASE_URL;
