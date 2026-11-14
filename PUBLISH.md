@@ -2,7 +2,7 @@
 
 > **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
-> **v0.1.1 状态（2026-11-15）**：修复代码已推送 main，当前 HEAD `2f0d6e9`（修复提交 `9c4b7b7`）；CI run #8 与 #9 均为 `success`；正式 Release 等待配置 Windows / Android 签名 Secrets，尚未创建 `v0.1.1` tag。
+> **v0.1.1 状态（2026-11-15）**：已使用开发自签名证书和开发 release keystore 完成正式构建。Release workflow run `43617653552` 的 windows / android / source / publish 四个 job 全部 `success`；Release <https://github.com/subeichen1/casthub/releases/tag/v0.1.1> 已发布 `CastHub.exe`、`CastHub-TV.apk`、`casthub-src.tar.gz` 与 `checksums.txt`。开发签名可能触发 Windows“未知发布者”提示，生产分发需替换正式证书。
 >
 > 适用场景：本机没有安装 GitHub CLI（`gh`），或 `gh` 未登录 GitHub。本文按"网页建仓 + Git 命令行推送"的手工路径写成；仓库本身已经整理完毕（分支 `main`、历史保留、构建产物已排除出 git），照着做即可发布。
 >

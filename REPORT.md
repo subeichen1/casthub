@@ -299,3 +299,11 @@ $ git log --oneline
 - Release：`v0.1.0`（release id `445283603`），资产 `CastHub.exe`（70,267,632 字节）与 `app-debug.apk`（6,437,094 字节）；<https://github.com/subeichen1/casthub/releases/tag/v0.1.0>
 - 详细发布手册与状态见 `PUBLISH.md`；剩余人工验证事项见 `BLOCKERS.md`。
 
+## Phase 8K — v0.1.1 发布记录（2026-11-15）
+
+- 修复提交：`9c4b7b70dedb453d5a30ab9ca4754e5f6592a7dd`（39 files changed，3536 insertions/1929 deletions）；随后文档提交 `2f0d6e9`、`064caf2`。
+- 签名材料：生成 `CastHub-Dev-CodeSigning.pfx` / `.cer` 与 `casthub-release.keystore`（仓库外 `casthub-signing/`）；证书 Subject `CN=CastHub Development, O=CastHub, OU=Development, C=CN`，有效期至 2036-11-15；配置 6 个 GitHub Actions Secrets，密码未入库。
+- 发布工作流：`.github/workflows/release.yml` 支持开发自签名证书（验证 `SignerCertificate` 且 Subject 以 `CN=CastHub Development` 开头），Release 名称标注“开发签名测试版”。
+- Release：tag `v0.1.1`，release id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
+- Actions：Release workflow run id `43617653552`，windows / android / source / publish 四个 job 全部 `success`；Windows Authenticode 验证与 Android APK 签名验证步骤均通过。
+

@@ -34,11 +34,10 @@
 - Release：`v0.1.0`（release id `445283603`），已上传 `CastHub.exe`（70,267,632 字节）与 `app-debug.apk`（6,437,094 字节）。
 - `PUBLISH.md` 保留为发布流程参考。
 
-## Phase 8K — v0.1.1 正式 Release（blocked，2026-11-15）
+## Phase 8K — v0.1.1 正式 Release（已完成，2026-11-15）
 
-- 代码修复已完成并推送：修复提交 `9c4b7b70dedb453d5a30ab9ca4754e5f6592a7dd`（`fix: complete CastHub security and reliability remediation (v0.1.1)`）；当前 main HEAD 为文档提交 `2f0d6e998a63f407e8c8fa239137cfabc9d4a483`（`docs: record v0.1.1 release signing blocker`）。
-- GitHub Actions CI run #8（id `43615304471`）针对修复提交完成，结论 `success`；文档提交后的 CI run #9（id `43615719707`）同样为 `success`。
-- 本地回归（2026-11-14）：typecheck / lint / build / npm audit / e2e 10/10 / e2e-dlna 9/9 / perf smoke 全部通过；详见 `REPORT.md` 与 `.dsh-pilot` 日志。
-- 发布阻塞：仓库 Actions secrets 数量为 0；本机未找到 `.pfx` / `.p12` / `.jks` / `.keystore` 或代码签名证书。`.github/workflows/release.yml` 会在缺少 `WINDOWS_CERT_PFX_BASE64` / `CASTHUB_KEYSTORE_BASE64` 时主动失败，属于预期保护。
-- 待人工提供：Windows PFX 与密码、Android release keystore 与密码/alias；配置 6 个 Secrets 后创建并推送 `v0.1.1` tag，验收 windows / android / source / publish jobs。
-- 未上传本地 unsigned `server/release/CastHub.exe` 或 debug APK 作为 Release 资产。
+- 代码修复已完成并推送：修复提交 `9c4b7b70dedb453d5a30ab9ca4754e5f6592a7dd`（`fix: complete CastHub security and reliability remediation (v0.1.1)`）。
+- 签名材料：按用户授权生成开发自签名证书与独立 Android release keystore（文件位于仓库外 `casthub-signing/`，密码未入库），并通过 GitHub REST 配置 6 个 Actions Secrets；`.github/workflows/release.yml` 已支持开发自签名证书验证并发布开发签名测试版说明。
+- Release workflow：run id `43617653552`，tag `v0.1.1`，结论 `success`；windows / android / source / publish 四个 job 全部通过，Windows Authenticode 与 Android APK 签名校验步骤均为 `success`。
+- Release：id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
+- 说明：本次使用开发自签名证书，Windows 可能显示“未知发布者”，生产分发需替换正式证书；未手工上传本地 unsigned 构建产物。
