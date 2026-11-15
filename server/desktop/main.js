@@ -30,6 +30,12 @@ function resolveAppRoot() {
   return path.resolve(__dirname, "..");
 }
 
+function resolveAutoStartPath() {
+  // portable 版主进程从 %TEMP% 解压目录启动，process.execPath 不是 exe 本体；
+  // PORTABLE_EXECUTABLE_FILE 由 electron-builder portable 目标注入，指向用户双击的 exe。
+  return process.env.PORTABLE_EXECUTABLE_FILE || process.execPath;
+}
+
 function logToFile(appRoot, message) {
   if (!app.isPackaged) {
     console.error(message);
@@ -215,9 +221,10 @@ function createTray(appRoot) {
 
 function syncAutoStart(appRoot) {
   const settings = readDesktopSettings(appRoot);
+  const autoStartPath = resolveAutoStartPath();
   try {
-    app.setLoginItemSettings({ openAtLogin: settings.autoStart, path: process.execPath });
-    logToFile(appRoot, "AUTOSTART_SYNC enabled=" + settings.autoStart + " path=" + process.execPath);
+    app.setLoginItemSettings({ openAtLogin: settings.autoStart, path: autoStartPath });
+    logToFile(appRoot, "AUTOSTART_SYNC enabled=" + settings.autoStart + " path=" + autoStartPath);
   } catch (error) {
     logToFile(appRoot, "AUTOSTART_SYNC_FAILED " + (error && error.message ? error.message : String(error)));
   }
@@ -227,15 +234,16 @@ function applyAutoStart(enabled) {
   if (!appRootPath) return { ok: false, autoStart: false, error: "app not ready" };
   const previous = readDesktopSettings(appRootPath);
   const next = Boolean(enabled);
+  const autoStartPath = resolveAutoStartPath();
   try {
-    app.setLoginItemSettings({ openAtLogin: next, path: process.execPath });
+    app.setLoginItemSettings({ openAtLogin: next, path: autoStartPath });
     saveDesktopSettings(appRootPath, { autoStart: next });
-    logToFile(appRootPath, "AUTOSTART_SET enabled=" + next + " path=" + process.execPath);
+    logToFile(appRootPath, "AUTOSTART_SET enabled=" + next + " path=" + autoStartPath);
     rebuildTrayMenu();
     return { ok: true, autoStart: next };
   } catch (error) {
     try {
-      app.setLoginItemSettings({ openAtLogin: previous.autoStart, path: process.execPath });
+      app.setLoginItemSettings({ openAtLogin: previous.autoStart, path: autoStartPath });
     } catch {
       // 回滚失败也不能影响页面响应
     }
