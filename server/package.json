@@ -60,7 +60,7 @@
         "portable"
       ],
       "artifactName": "CastHub.exe",
-      "icon": "desktop/assets/icon-512.png"
+      "icon": "desktop/assets/icon.ico"
     }
   }
 }
