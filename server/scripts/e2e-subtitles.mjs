@@ -97,6 +97,15 @@ async function main() {
   const caseCandidates = await findSubtitleCandidates(path.join(mediaDir, "Case.mp4"));
   assert.ok(caseCandidates.some((c) => c.path.endsWith("case.srt") && c.exact), "Windows 大小写不敏感匹配 Case.mp4 + case.srt");
 
+  fs.writeFileSync(path.join(mediaDir, "Refresh.mp4"), Buffer.alloc(1024, 0x1e));
+  const beforeRefresh = await findSubtitleCandidates(path.join(mediaDir, "Refresh.mp4"));
+  assert.equal(beforeRefresh.length, 0, "投屏前无字幕");
+  fs.writeFileSync(path.join(mediaDir, "Refresh.srt"), "1\n00:00:01,000 --> 00:00:02,000\nNew subtitle\n", "utf8");
+  const cachedRefresh = await findSubtitleCandidates(path.join(mediaDir, "Refresh.mp4"));
+  assert.equal(cachedRefresh.length, 0, "短 TTL 缓存内复用旧扫描结果");
+  const refreshed = await findSubtitleCandidates(path.join(mediaDir, "Refresh.mp4"), { refresh: true });
+  assert.ok(refreshed.some((c) => c.path.endsWith("Refresh.srt") && c.exact), "投屏前强制刷新发现新增字幕");
+
   const selectCandidates = await findSubtitleCandidates(path.join(mediaDir, "select", "movie.mp4"));
   const before = JSON.stringify(selectCandidates);
   const selectedSubs = selectSubtitle(selectCandidates);

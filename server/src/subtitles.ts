@@ -60,7 +60,7 @@ const LANGUAGE_TAGS = new Set([
 
 const MODIFIERS = new Set(["forced", "sdh", "cc", "default", "full", "sc", "tc"]);
 
-const SUBTITLE_CACHE_TTL_MS = 10_000;
+const SUBTITLE_CACHE_TTL_MS = 2_000;
 const SUBTITLE_CACHE_MAX = 200;
 const subtitleCache = new Map<string, { expiresAt: number; candidates: SubtitleCandidate[] }>();
 
@@ -116,15 +116,27 @@ function comparePaths(a: SubtitleCandidate, b: SubtitleCandidate): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
+export interface FindSubtitleCandidatesOptions {
+  /** 跳过缓存重新扫描；投屏动作使用，确保刚放入的字幕立即可见。 */
+  refresh?: boolean;
+}
+
 /** 扫描视频同目录及 Subs/subtitles/sub 一级子目录中的字幕候选。永不抛异常。 */
-export async function findSubtitleCandidates(videoPath: string): Promise<SubtitleCandidate[]> {
+export async function findSubtitleCandidates(
+  videoPath: string,
+  options: FindSubtitleCandidatesOptions = {}
+): Promise<SubtitleCandidate[]> {
   const absoluteVideo = path.resolve(videoPath);
   const cacheKey = normalizePathForSort(absoluteVideo);
-  const cached = subtitleCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.candidates.map(cloneCandidate);
+  if (options.refresh) {
+    subtitleCache.delete(cacheKey);
+  } else {
+    const cached = subtitleCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.candidates.map(cloneCandidate);
+    }
+    if (cached) subtitleCache.delete(cacheKey);
   }
-  if (cached) subtitleCache.delete(cacheKey);
   try {
     const base = path.basename(absoluteVideo, path.extname(absoluteVideo));
     const videoDir = path.dirname(absoluteVideo);

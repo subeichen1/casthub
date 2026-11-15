@@ -287,7 +287,7 @@ export function attachConsoleWs(
             let subtitleUrl: string | null = null;
             if (subtitles) {
               try {
-                const candidates = await findSubtitleCandidates(target);
+                const candidates = await findSubtitleCandidates(target, { refresh: true });
                 const selected = selectSubtitle(candidates);
                 subtitleUrl = selected
                   ? buildSubtitleUrl(options.publicBaseUrl, realRoot, selected.path, options.mediaSigningKey)
