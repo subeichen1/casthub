@@ -18,3 +18,9 @@
 - 锁定决策 2 允许在 `better-sqlite3` 安装失败（编译失败/无预编译产物）时以 JSON 文件实现顶上；本机 `npm.cmd install better-sqlite3@^11 --save` 因缺少 Visual Studio C++ 工具链且预编译下载 `ECONNRESET` 失败。
 - 已实现 `data/casthub-history.json` 整表读写作为唯一降级实现；`HistoryStore` 接口、协议、e2e、控制台 UI 均不变，未引入第三种实现。
 - `server/package.json` 使用 `optionalDependencies` 声明 `better-sqlite3@^11.10.0`，使安装失败不阻塞 `npm install`，并让具备构建工具的人类机器自然启用 SQLite。
+
+## Phase 10 — e2e-dlna 只选择 fake 设备的测试基线修正
+
+- 前置检查时 `node scripts/e2e-dlna.mjs` 失败：SSDP 同时发现真实电视（TCL）与 fake-dlna，`waitDlnaDevice` 选中了真实电视，触发 `deviceName 与 device.xml friendlyName 不匹配`。这是测试环境干扰，不是产品缺陷。
+- 修正 `server/scripts/e2e-dlna.mjs`：新增 `FAKE_DEVICE_NAME = "Fake DLNA TV"` 与 `isFakeDlnaDevice`，`waitDlnaDevice` 及两处设备查找仅匹配 fake 设备；生产代码零改动。
+- 该修正合并在 `phase10A` commit 中：前置基线必须先修复才能执行 Phase 10A 门禁。

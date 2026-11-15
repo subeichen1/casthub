@@ -283,6 +283,7 @@ tv-app/app/build/outputs/apk/release/app-release.apk
 ### 限制清单
 
 - **字幕是厂商扩展，尽力而为**：DLNA 没有统一的字幕协议。中枢会把视频同目录、同名的 `.srt` 以 Samsung `sec:CaptionInfoEx`（属性式 `sec:type="srt"`）与 Sony `pv:subtitleFileUri` 两种扩展写入 DIDL-Lite，并在 `/media` 的 GET/HEAD 响应中加 `CaptionInfo.sec` 头。不同品牌、型号的识别率差异很大，不保证一定能显示。Sony 官方支持文档明确写「DLNA 服务器不支持 srt 字幕显示」，这类电视请改用主路线 CastHub App（字幕处理见「字幕」相关章节）。字幕文件会统一转成 UTF-8 srt，`Content-Type` 为 `application/x-subrip; charset=utf-8`；个别电视只认 `text/plain` 时，可把 `server/src/files.ts` 的 `MIME_TYPES` 中 `.srt` 值改成 `text/plain` 后重启中枢（默认不建议，因为会影响主路线）。
+- **音量控制**：支持 UPnP RenderingControl 的电视可在控制台调节 0-100 音量（发现后每 2 秒同步一次）；电视不支持或未提供 RenderingControl 时滑条禁用并提示，不影响播放控制。
 - **拖动精度受电视影响**：进度条 seek 会转成电视的 AVTransport Seek，实际落点和响应速度由电视实现决定。
 - **断点续播**：已支持；中枢在 Play 后等待 1 秒再发 Seek，实际落点与响应速度由电视实现决定。
 - **mkv / avi 可能不被电视接受**：部分电视 DLNA 渲染器只支持 mp4 等有限封装；这是已知边界，本项目不做转码补救。

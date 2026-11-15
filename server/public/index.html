@@ -137,6 +137,15 @@
     .time-row { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; margin-top: 4px; }
     .controls { display: flex; gap: 8px; margin-top: 12px; }
     .controls button { flex: 1; }
+    .volume-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .volume-block[hidden], .dlna-options[hidden] { display: none; }
+    .volume-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+    .volume-head strong { color: var(--text); font-weight: 600; }
+    .volume-block .hint { margin-top: 4px; }
+    .dlna-options { margin-top: 12px; padding: 10px 12px; border: 1px solid #92400e; border-radius: 9px; background: rgba(59, 47, 20, 0.5); }
+    .dlna-options label { display: flex; align-items: center; gap: 8px; color: #fde68a; font-size: 13px; cursor: pointer; }
+    .dlna-options input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
+    .dlna-options .hint { margin-top: 6px; color: #d6b65c; }
     .hint { color: #64748b; font-size: 12px; line-height: 1.6; margin-top: 12px; }
     #toast {
       position: fixed;
@@ -223,7 +232,7 @@
   </header>
 
   <div id="dlnaBanner" class="dlna-banner" hidden>
-    ⚠ 降级模式（DLNA）：字幕、进度拖动精度依赖电视实现；断点续播已支持
+    ⚠ 降级模式（DLNA）：字幕为厂商扩展尽力而为，进度拖动精度依赖电视实现；断点续播已支持
   </div>
 
   <main class="layout">
@@ -277,6 +286,15 @@
       <div class="controls">
         <button id="toggleBtn" disabled>播放</button>
         <button id="stopBtn" class="secondary" disabled>停止</button>
+      </div>
+      <div id="volumeBlock" class="volume-block" hidden>
+        <div class="volume-head"><span>音量</span><strong id="volumeValue">—</strong></div>
+        <input id="volumeSlider" type="range" min="0" max="100" step="1" value="50" />
+        <div id="volumeHint" class="hint" hidden>该设备不支持音量控制</div>
+      </div>
+      <div id="dlnaOptions" class="dlna-options" hidden>
+        <label><input id="dlnaSubtitles" type="checkbox" checked /> 字幕（尽力而为）</label>
+        <div class="hint">DLNA 字幕为厂商扩展，部分电视可能不显示；不支持时请使用主路线 App。</div>
       </div>
       <div class="hint">拖进度条松开后发送 seek；遥控器确认键也可播放/暂停，左右键 ±10 秒。</div>
     </section>

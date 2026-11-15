@@ -16,6 +16,9 @@
     ws: null,
     reconnectTimer: null,
     draggingSeek: false,
+    draggingVolume: false,
+    volumeSendTimer: null,
+    lastVolumeSentAt: 0,
     consoleToken: "",
     authenticated: false
   };
@@ -55,6 +58,12 @@
     durationText: document.getElementById("durationText"),
     toggleBtn: document.getElementById("toggleBtn"),
     stopBtn: document.getElementById("stopBtn"),
+    volumeBlock: document.getElementById("volumeBlock"),
+    volumeSlider: document.getElementById("volumeSlider"),
+    volumeValue: document.getElementById("volumeValue"),
+    volumeHint: document.getElementById("volumeHint"),
+    dlnaOptions: document.getElementById("dlnaOptions"),
+    dlnaSubtitles: document.getElementById("dlnaSubtitles"),
     toast: document.getElementById("toast")
   };
 
@@ -215,7 +224,12 @@
     }
     state.currentTitle = entry.name;
     els.playerTitle.textContent = entry.name;
-    if (send({ type: "cast", deviceId: state.selectedDeviceId, path: entry.path, resume: !!resume })) {
+    const payload = { type: "cast", deviceId: state.selectedDeviceId, path: entry.path, resume: !!resume };
+    const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
+    if (selected && selected.type === "dlna") {
+      payload.subtitles = els.dlnaSubtitles.checked;
+    }
+    if (send(payload)) {
       state.castingDeviceId = state.selectedDeviceId;
       updateDlnaBanner();
     }
@@ -223,6 +237,25 @@
 
   function castHistory(entry, resume) {
     castFile({ name: entry.name, path: entry.path }, resume);
+  }
+
+  function sendVolume(value) {
+    const deviceId = state.selectedDeviceId;
+    if (!deviceId) return;
+    const target = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    const now = Date.now();
+    const elapsed = now - state.lastVolumeSentAt;
+    if (elapsed >= 300) {
+      state.lastVolumeSentAt = now;
+      send({ type: "control", deviceId: deviceId, action: "volume", value: target });
+      return;
+    }
+    if (state.volumeSendTimer) clearTimeout(state.volumeSendTimer);
+    state.volumeSendTimer = setTimeout(function () {
+      state.volumeSendTimer = null;
+      state.lastVolumeSentAt = Date.now();
+      send({ type: "control", deviceId: deviceId, action: "volume", value: target });
+    }, 300 - elapsed);
   }
 
   function renderHistory() {
@@ -323,6 +356,7 @@
   function renderControls() {
     const status = state.tvStatus;
     const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
+    const isDlna = !!(selected && selected.type === "dlna");
     const canControl = !!(selected && selected.online && status);
     const tvState = status ? status.state : "idle";
     els.stateBadge.textContent = tvState;
@@ -336,6 +370,24 @@
       els.toggleBtn.textContent = "播放";
     } else {
       els.toggleBtn.textContent = "播放";
+    }
+
+    els.volumeBlock.hidden = !isDlna;
+    els.dlnaOptions.hidden = !isDlna;
+    if (isDlna) {
+      const statusVolume = status && typeof status.volume === "number" ? status.volume : null;
+      const deviceVolume = typeof selected.volume === "number" ? selected.volume : null;
+      const volume = statusVolume !== null ? statusVolume : deviceVolume;
+      const volumeAvailable = !!(selected.online && volume !== null);
+      els.volumeSlider.disabled = !volumeAvailable;
+      if (volumeAvailable) {
+        if (!state.draggingVolume) els.volumeSlider.value = String(Math.round(volume));
+        els.volumeValue.textContent = Math.round(volume) + "%";
+        els.volumeHint.hidden = true;
+      } else {
+        els.volumeValue.textContent = "—";
+        els.volumeHint.hidden = false;
+      }
     }
 
     if (!status) {
@@ -559,6 +611,17 @@
       action: "seek",
       positionMs: Number(els.seekSlider.value)
     });
+  });
+
+  els.volumeSlider.addEventListener("pointerdown", function () {
+    state.draggingVolume = true;
+  });
+  els.volumeSlider.addEventListener("input", function () {
+    els.volumeValue.textContent = els.volumeSlider.value + "%";
+  });
+  els.volumeSlider.addEventListener("change", function () {
+    state.draggingVolume = false;
+    sendVolume(Number(els.volumeSlider.value));
   });
 
   els.connectBtn.addEventListener("click", function () {
