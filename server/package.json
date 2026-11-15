@@ -1,6 +1,6 @@
 {
   "name": "casthub-server",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "engines": {
     "node": ">=20"
@@ -60,7 +60,7 @@
         "portable"
       ],
       "artifactName": "CastHub.exe",
-      "icon": "desktop/assets/icon.ico"
+      "icon": "desktop/assets/icon-512.png"
     }
   }
 }

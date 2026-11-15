@@ -231,6 +231,30 @@ Windows 电脑直接双击 `CastHub.exe` 即可启动，免安装、可放 U 盘
 2. Windows 防火墙弹窗（进程名 `CastHub.exe`）必须点「允许访问」，否则电视端无法拉取视频流。
 3. 运行日志写在 exe 所在目录的 `casthub.log`，排查问题时请一并提供。
 4. 需要指定媒体目录或公网地址时，在 exe 同目录创建 `config.json`；环境变量优先级最高。
+5. **关闭窗口（右上角 ×）不会退出 CastHub，而是隐藏到系统托盘**；需要彻底退出时，右键任务栏托盘区的 CastHub 图标（蓝色 C）选择「退出」。托盘菜单还可以「显示 CastHub」、勾选「开机自启」、手动「检查更新」；发现新版本时会显示「下载新版本…」。
+
+### 开机自启
+
+桌面设置面板与托盘菜单里的「开机自启」复选框双向同步，状态保存在 exe 同目录 `config.json` 的 `desktop.autoStart`。开启后 Windows 登录时会自动启动 CastHub。
+
+portable 版请慎开：启动项指向 exe 当前路径，移动或删除 exe（例如 U 盘拔走后）启动项会失效；需要时把 exe 放回原路径，或重新打开 CastHub 重新勾选。
+
+### 检查更新
+
+CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。默认未配置 `desktop.updateRepo`，此时只写日志 `UPDATE_CHECK_SKIPPED`，不发起网络请求。配置 GitHub 仓库 `owner/repo`（或完整 Releases API URL）后，程序读取 `releases/latest`，将 `tag_name` 与当前版本做三段数值比较；发现新版本会发系统通知，并在托盘菜单增加「下载新版本…」，点击后用默认浏览器打开 `html_url`。本项目是未签名 portable 版，不做静默更新，请从 Releases 页手动下载新 exe 替换。
+
+```json
+{
+  "mediaDir": "D:\\Videos",
+  "publicBaseUrl": "http://192.168.1.5:9420",
+  "desktop": {
+    "autoStart": false,
+    "updateRepo": "subeichen1/casthub"
+  }
+}
+```
+
+匿名请求受 GitHub 60 次/小时限额约束，程序固定每 24 小时检查一次，不会分钟级轮询。
 
 ## 电视端 App 安装（TCL U 盘 sideload）
 
