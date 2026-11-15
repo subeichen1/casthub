@@ -35,11 +35,12 @@
     header .sub { color: var(--muted); font-size: 14px; }
     .layout {
       display: grid;
-      grid-template-columns: 330px minmax(420px, 1fr) 330px;
+      grid-template-columns: 330px minmax(480px, 1fr) 330px;
       gap: 16px;
       padding: 12px 24px 24px;
       align-items: start;
     }
+    .column { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
     .panel {
       background: rgba(17, 28, 46, 0.92);
       border: 1px solid var(--line);
@@ -93,7 +94,7 @@
     .file-list { display: flex; flex-direction: column; gap: 6px; max-height: 520px; overflow: auto; }
     .file-row {
       display: grid;
-      grid-template-columns: 26px 1fr 90px 90px 74px;
+      grid-template-columns: 26px 1fr 90px 90px 116px;
       align-items: center;
       gap: 8px;
       padding: 9px 10px;
@@ -107,6 +108,16 @@
     .file-row.dir .file-name { color: #93c5fd; cursor: pointer; }
     .file-size { color: var(--muted); text-align: right; font-size: 12px; }
     .file-mime { color: #64748b; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+    .file-actions { display: flex; gap: 6px; justify-content: flex-end; }
+    .file-actions button { padding: 6px 8px; font-size: 12px; }
+    .history-list { display: flex; flex-direction: column; gap: 8px; max-height: 300px; overflow: auto; }
+    .history-row { border: 1px solid var(--line); background: var(--panel-2); border-radius: 10px; padding: 9px 10px; }
+    .history-main { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .history-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-progress { color: var(--cyan); font-size: 12px; white-space: nowrap; }
+    .history-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
+    .history-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .history-actions button { flex: 1; padding: 5px 8px; font-size: 12px; }
     .player-title { font-size: 14px; color: var(--cyan); margin-bottom: 8px; min-height: 20px; }
     .state-badge {
       display: inline-block;
@@ -187,7 +198,7 @@
     .auth-card h2 { margin: 0 0 8px; color: #cbd5e1; font-size: 18px; }
     .auth-card p { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 14px; }
     .auth-error { color: #fca5a5; font-size: 12px; min-height: 18px; margin-top: 8px; }
-    @media (max-width: 1100px) {
+    @media (max-width: 1200px) {
       .layout { grid-template-columns: 1fr; }
       .file-list { max-height: 420px; }
     }
@@ -212,10 +223,11 @@
   </header>
 
   <div id="dlnaBanner" class="dlna-banner" hidden>
-    ⚠ 降级模式（DLNA）：字幕、断点续播不可用，进度与拖动精度依赖电视实现
+    ⚠ 降级模式（DLNA）：字幕、进度拖动精度依赖电视实现；断点续播已支持
   </div>
 
   <main class="layout">
+    <div class="column">
     <section class="panel">
       <div class="panel-head">
         <h2>设备</h2>
@@ -233,6 +245,17 @@
       </div>
       <div class="hint">电视端 App 打开后会显示「ws://电视IP:9417」和 6-8 位配对码，填入上方即可。支持 DLNA 的电视会自动出现在列表中（DLNA 设备无需配对码，也不支持手动增删）。</div>
     </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>播放历史</h2>
+        <button id="clearHistoryBtn" class="danger small" disabled>清空</button>
+      </div>
+      <div id="historyList" class="history-list">
+        <div class="empty">暂无播放历史</div>
+      </div>
+    </section>
+    </div>
 
     <section class="panel">
       <h2>媒体库</h2>

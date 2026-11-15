@@ -27,6 +27,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 | --- | --- |
 | **本地投屏** | 浏览器控制台浏览媒体库，一键把视频投到电视；支持播放、暂停、拖动进度和停止。 |
 | **DLNA 兼容** | 电视装不了 App 时，自动发现并驱动电视自带的 DLNA/UPnP 播放器。 |
+| **播放历史** | 按文件路径保存播放位置；再次投同一文件默认续播，可从控制台管理历史。 |
 | **Windows 桌面端** | 免安装 portable 版，双击即用，可放 U 盘携带；支持同目录 `config.json`。 |
 | **Android TV 客户端** | Kotlin + Media3/ExoPlayer 原生播放，支持遥控器操作与 8 位安全配对码。 |
 | **局域网直连** | PC 与电视直接传输媒体流，不经过云端；支持 HTTP Range，进度拖动可靠。 |
@@ -109,11 +110,55 @@ curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/instal
 
 ## 控制台界面
 
-控制台包含三个主要区域：
+控制台包含四个主要区域：
 
 - **设备**：输入电视显示的 `ws://<电视 IP>:9417` 和 8 位配对码，添加并查看设备在线状态；
-- **媒体库**：浏览 `MEDIA_DIR` 下的视频文件，显示文件名、类型与大小；
+- **播放历史**：列出文件名、更新时间与进度百分比，可继续播放、从头播放、删除单条或清空全部；
+- **媒体库**：浏览 `MEDIA_DIR` 下的视频文件，显示文件名、类型与大小；有播放历史的文件默认从上次位置继续，并提供「从头」入口；
 - **播放控制**：显示当前播放状态、进度条、暂停/继续和停止按钮。
+
+## 播放历史与断点续播
+
+CastHub 会按文件绝对路径记录播放位置，App（casthub）与 DLNA 设备共用同一份历史。再次投同一文件时默认从上次位置继续，也可以在控制台选择「从头播放」。
+
+### 数据位置
+
+优先级：`DATA_DIR` > `PORTABLE_EXECUTABLE_DIR`（桌面版 exe 所在目录）> 项目根目录。数据库固定位于其下的 `data/`：
+
+- SQLite 模式：`data/casthub.db`
+- JSON 降级模式：`data/casthub-history.json`（仅当 better-sqlite3 无法安装/加载时）
+- `data/` 已加入 `.gitignore`，不与源码混在一起。
+
+### 断点判定规则
+
+- 每 5 秒最多落盘一次；状态切换为 paused / idle / error 时立即落盘。
+- 5 秒 ≤ 播放位置 < 95% × 时长才视为有效断点；小于 5 秒不记录。
+- 播放位置达到 95% 视为看完：位置清零、播放次数 +1，历史行保留。
+- 时长为 0 时不判看完，避免除零。
+- 续播目标超过换片源后的实际时长时，由播放错误自动清除该文件历史。
+
+### 控制台操作
+
+- 左侧「播放历史」列出文件名、更新时间与进度百分比，可「继续播放」「从头播放」「删除」，或点「清空」删除全部。
+- 媒体库中有历史的文件，主按钮显示「继续播放」并默认 `resume=true`；旁边的「从头」按钮使用 `resume=false`。
+
+### 备份方法
+
+直接复制整个 `data/` 目录即可（SQLite 模式可能同时包含 `-wal`/`-shm` 临时文件；停止 CastHub 后复制最稳妥）。恢复时把 `data/` 放回同一优先级路径即可。
+
+### JSON 降级模式
+
+`better-sqlite3` 是可选原生依赖；如果当前机器没有预编译产物且缺少 C++ 构建工具，安装或加载失败时，中枢会记录日志并自动使用 `data/casthub-history.json`（整表读写）。接口、协议与控制台功能完全一致；在依赖安装正常的人类机器上会自然回到 SQLite。项目只保留 SQLite 与 JSON 两种实现。
+
+### Electron 打包
+
+`better-sqlite3` 是原生模块，Electron 打包前必须执行：
+
+```bash
+npx electron-builder install-app-deps
+```
+
+以按 Electron 的 ABI 重建原生模块；否则打包后的桌面版可能加载失败并降级为 JSON。
 
 ## 工作原理
 
@@ -136,9 +181,11 @@ casthub/
 │   ├── src/files.ts         # /api/files 浏览 + /media 流（Range）
 │   ├── src/devices.ts       # 设备注册 + 中枢→电视 WS 客户端（指数退避重连）
 │   ├── src/dlna.ts          # DLNA 发现、SOAP 控制与状态轮询（降级模式）
+│   ├── src/history.ts       # 播放历史接口 + SQLite/JSON 存储
 │   ├── src/console-ws.ts    # 控制台 ↔ 中枢 WS
 │   ├── public/              # 控制台网页（原生 HTML/JS，无构建）
-│   └── scripts/             # fake-tv / e2e / fake-dlna / e2e-dlna
+│   ├── data/                # 播放历史数据库（运行时生成，已 gitignore）
+│   └── scripts/             # fake-tv / e2e / e2e-history / fake-dlna / e2e-dlna
 ├── tv-app/                  # Android TV App（Kotlin + Media3）
 │   └── app/src/main/java/io/casthub/tv/
 │       ├── MainActivity.kt  # 配对屏：本机 WS 地址 + 8 位配对码
@@ -159,6 +206,7 @@ casthub/
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
 | `MEDIA_DIR` | `server/media` | 媒体根目录，支持绝对路径；不存在时自动创建。 |
+| `DATA_DIR` | 项目根目录（桌面版为 exe 所在目录） | 历史数据根目录，实际数据库位于其下的 `data/`；优先级高于 `PORTABLE_EXECUTABLE_DIR`。 |
 | `PUBLIC_BASE_URL` | 自动探测局域网 IPv4 | 覆盖下发给电视的媒体基址，例如 `http://192.168.1.5:9420`。默认从网卡探测非回环 IPv4。 |
 | `CONSOLE_TOKEN` | 自动生成并持久化 | 控制台访问令牌；未设置时优先读取 config.json，否则写入 `CASTHUB_CONFIG_DIR/console-token.txt`。 |
 | `CASTHUB_CONFIG_DIR` | 进程工作目录 | `config.json` 与 `console-token.txt` 的存放目录。 |
@@ -236,7 +284,7 @@ tv-app/app/build/outputs/apk/release/app-release.apk
 
 - **无字幕保证**：DLNA 降级模式不推送外挂字幕，字幕能否显示取决于电视自身。
 - **拖动精度受电视影响**：进度条 seek 会转成电视的 AVTransport Seek，实际落点和响应速度由电视实现决定。
-- **无断点续播**：中枢不保存播放进度，重启或重新投屏从头开始。
+- **断点续播**：已支持；中枢在 Play 后等待 1 秒再发 Seek，实际落点与响应速度由电视实现决定。
 - **mkv / avi 可能不被电视接受**：部分电视 DLNA 渲染器只支持 mp4 等有限封装；这是已知边界，本项目不做转码补救。
 - **状态有最多数秒延迟**：中枢每 1s 轮询一次电视状态，界面显示可能比电视实际状态慢数秒。
 
@@ -265,6 +313,7 @@ npm install
 npm run build        # TypeScript 类型检查 + 编译到 dist/
 npm run typecheck    # 仅类型检查
 npm run e2e          # fake-tv + 中枢，完整 App 投屏流程
+node scripts/e2e-history.mjs # 播放历史 + 重启后续播流程
 node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 ```
 
@@ -283,7 +332,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和两条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和三条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 
@@ -295,7 +344,7 @@ CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执
 
 ## 已知边界
 
-- 无数据库、无转码、无多用户，状态存内存；中枢重启后设备列表清空。
+- 无转码、无多用户；设备列表与当前播放状态存内存，中枢重启后设备列表清空；播放历史持久化在本地 `data/`（SQLite，安装失败时 JSON 降级）。
 - 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 8 位码；DLNA 兼容模式作为降级路径。
 - DTS 等电视不支持的音轨只能换片源，本项目不转码。
 - 本项目面向家庭局域网，不建议直接暴露到公网。控制面使用控制台令牌鉴权，媒体流使用 HMAC 签名 URL；信任边界与安全验收要求见 [SECURITY.md](SECURITY.md)。

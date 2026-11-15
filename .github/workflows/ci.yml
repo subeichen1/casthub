@@ -32,6 +32,8 @@ jobs:
         run: cd server && node scripts/e2e.mjs
       - name: E2E (DLNA fallback)
         run: cd server && node scripts/e2e-dlna.mjs
+      - name: E2E (Playback history)
+        run: cd server && node scripts/e2e-history.mjs
       - name: SBOM (CycloneDX)
         run: cd server && npm sbom --sbom-format=cyclonedx > sbom.json
       - name: Upload SBOM

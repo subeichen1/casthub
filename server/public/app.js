@@ -4,6 +4,7 @@
 
   const state = {
     devices: [],
+    history: [],
     selectedDeviceId: null,
     files: [],
     filesOffset: 0,
@@ -42,6 +43,8 @@
     addDeviceBtn: document.getElementById("addDeviceBtn"),
     refreshDevicesBtn: document.getElementById("refreshDevicesBtn"),
     deviceList: document.getElementById("deviceList"),
+    historyList: document.getElementById("historyList"),
+    clearHistoryBtn: document.getElementById("clearHistoryBtn"),
     dlnaBanner: document.getElementById("dlnaBanner"),
     breadcrumb: document.getElementById("breadcrumb"),
     fileList: document.getElementById("fileList"),
@@ -133,6 +136,12 @@
   }
 
   function handleMessage(msg) {
+    if (msg.type === "history") {
+      state.history = Array.isArray(msg.list) ? msg.list : [];
+      renderHistory();
+      if (state.files.length) renderFiles();
+      return;
+    }
     if (msg.type === "devices") {
       state.devices = Array.isArray(msg.list) ? msg.list : [];
       if (!state.devices.some(function (d) { return d.id === state.selectedDeviceId; })) {
@@ -159,6 +168,111 @@
     if (msg.type === "error") {
       showToast(msg.message || "未知错误", true);
     }
+  }
+
+  function normalizePath(value) {
+    return String(value || "").replace(/\\/g, "/");
+  }
+
+  function historyForFile(entry) {
+    const target = normalizePath(entry.path).replace(/^\/+/, "");
+    if (!target) return null;
+    for (let i = 0; i < state.history.length; i += 1) {
+      const candidate = normalizePath(state.history[i].path);
+      if (candidate === target || candidate.endsWith("/" + target)) return state.history[i];
+    }
+    return null;
+  }
+
+  function historyPercent(entry) {
+    const duration = Math.max(0, Number(entry.durationMs) || 0);
+    const position = Math.max(0, Number(entry.positionMs) || 0);
+    if (duration <= 0) return 0;
+    return Math.min(100, Math.round((position / duration) * 100));
+  }
+
+  function historyCompleted(entry) {
+    return Number(entry.positionMs) < 5000 && Number(entry.playCount) >= 2;
+  }
+
+  function formatUpdatedAt(value) {
+    const date = new Date(Number(value) || 0);
+    if (!isFinite(date.getTime())) return "-";
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false
+    });
+  }
+
+  function castFile(entry, resume) {
+    if (!state.selectedDeviceId) {
+      showToast("请先添加并选择一台电视", true);
+      return;
+    }
+    state.currentTitle = entry.name;
+    els.playerTitle.textContent = entry.name;
+    if (send({ type: "cast", deviceId: state.selectedDeviceId, path: entry.path, resume: !!resume })) {
+      state.castingDeviceId = state.selectedDeviceId;
+      updateDlnaBanner();
+    }
+  }
+
+  function castHistory(entry, resume) {
+    castFile({ name: entry.name, path: entry.path }, resume);
+  }
+
+  function renderHistory() {
+    els.historyList.innerHTML = "";
+    els.clearHistoryBtn.disabled = !state.history.length;
+    if (!state.history.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = "暂无播放历史";
+      els.historyList.appendChild(empty);
+      return;
+    }
+    state.history.forEach(function (entry) {
+      const row = document.createElement("div");
+      row.className = "history-row";
+      const main = document.createElement("div");
+      main.className = "history-main";
+      const name = document.createElement("span");
+      name.className = "history-name";
+      name.textContent = entry.name || entry.path;
+      name.title = entry.path;
+      const progress = document.createElement("span");
+      progress.className = "history-progress";
+      progress.textContent = historyCompleted(entry) ? "100% · 已看完" : historyPercent(entry) + "%";
+      main.appendChild(name);
+      main.appendChild(progress);
+      const meta = document.createElement("div");
+      meta.className = "history-meta";
+      meta.textContent = "更新 " + formatUpdatedAt(entry.updatedAt) + " · 播放 " + (Number(entry.playCount) || 0) + " 次";
+      const actions = document.createElement("div");
+      actions.className = "history-actions";
+      const continueBtn = document.createElement("button");
+      continueBtn.textContent = "继续播放";
+      continueBtn.addEventListener("click", function () { castHistory(entry, true); });
+      const restartBtn = document.createElement("button");
+      restartBtn.className = "secondary";
+      restartBtn.textContent = "从头播放";
+      restartBtn.addEventListener("click", function () { castHistory(entry, false); });
+      const deleteBtn = document.createElement("button");
+      deleteBtn.className = "danger";
+      deleteBtn.textContent = "删除";
+      deleteBtn.addEventListener("click", function () { send({ type: "deleteHistory", path: entry.path }); });
+      actions.appendChild(continueBtn);
+      actions.appendChild(restartBtn);
+      actions.appendChild(deleteBtn);
+      row.appendChild(main);
+      row.appendChild(meta);
+      row.appendChild(actions);
+      els.historyList.appendChild(row);
+    });
   }
 
   function renderDevices() {
@@ -353,23 +467,31 @@
       if (entry.isDir) {
         row.addEventListener("click", function () { loadFiles(entry.path); });
       } else {
+        const historyEntry = historyForFile(entry);
+        const actions = document.createElement("div");
+        actions.className = "file-actions";
         const castBtn = document.createElement("button");
-        castBtn.textContent = "投屏";
+        castBtn.textContent = historyEntry ? "继续播放" : "投屏";
         castBtn.disabled = !state.selectedDeviceId;
+        if (historyEntry) castBtn.title = "从上次播放位置继续（" + historyPercent(historyEntry) + "%）";
         castBtn.addEventListener("click", function (event) {
           event.stopPropagation();
-          if (!state.selectedDeviceId) {
-            showToast("请先添加并选择一台电视", true);
-            return;
-          }
-          state.currentTitle = entry.name;
-          els.playerTitle.textContent = entry.name;
-          if (send({ type: "cast", deviceId: state.selectedDeviceId, path: entry.path })) {
-            state.castingDeviceId = state.selectedDeviceId;
-            updateDlnaBanner();
-          }
+          castFile(entry, true);
         });
-        row.lastElementChild.appendChild(castBtn);
+        actions.appendChild(castBtn);
+        if (historyEntry) {
+          const restartBtn = document.createElement("button");
+          restartBtn.className = "secondary";
+          restartBtn.textContent = "从头";
+          restartBtn.disabled = !state.selectedDeviceId;
+          restartBtn.title = "从头开始播放";
+          restartBtn.addEventListener("click", function (event) {
+            event.stopPropagation();
+            castFile(entry, false);
+          });
+          actions.appendChild(restartBtn);
+        }
+        row.lastElementChild.appendChild(actions);
       }
       els.fileList.appendChild(row);
     });
@@ -379,6 +501,12 @@
 
   els.loadMoreBtn.addEventListener("click", function () {
     loadFiles(state.currentPath, true);
+  });
+
+  els.clearHistoryBtn.addEventListener("click", function () {
+    if (!state.history.length) return;
+    if (!window.confirm("确定清空全部播放历史？")) return;
+    send({ type: "clearHistory" });
   });
 
   els.addDeviceBtn.addEventListener("click", function () {
