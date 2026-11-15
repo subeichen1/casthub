@@ -16,10 +16,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: server/package-lock.json
       - name: Install dependencies
@@ -153,6 +153,8 @@ jobs:
             ## CastHub v0.2.0 — DLNA 字幕增强与稳定性改进
 
             本版本重点增强 DLNA 外挂字幕能力：支持 `.srt`、`.vtt`、`.ass`、`.ssa`、`.smi`、`.sub` 六种格式，支持 `Subs/`、`subtitles/`、`sub/` 子目录与语言后缀选择，并按 Samsung / Panasonic / LG / Sony / Generic 设备 profile 输出对应的 DIDL-Lite 字幕标记。
+
+            Windows 便携版同步升级 `better-sqlite3` 至 13.2（N-API 预编译），运行环境要求 Node.js 22+，修复 Electron 45 下的原生模块重建失败。
 
             > 本次 Release 使用项目开发自签名证书构建，仅用于开发/测试。Windows 可能显示“未知发布者”，请核对 SHA-256；Android 使用独立的开发 keystore 签名。生产分发请替换为正式代码签名证书和 release keystore。
           files: |

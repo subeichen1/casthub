@@ -50,4 +50,4 @@
   - `npm error not ok`
 - 因此本机运行 `createHistoryStore` 时先打印 `[history] better-sqlite3 不可用: Cannot find module 'better-sqlite3'` 和 `[history] SQLite 初始化失败，降级 JSON: better-sqlite3 模块未安装或加载失败`，实际使用 `data/casthub-history.json`；Phase 9A/9B/9C 全部门禁均在 JSON 模式真实通过。
 - `server/package.json` 已把 `better-sqlite3@^11.10.0` 放入 `optionalDependencies`，安装失败不会阻塞 `npm install`；在具备 Visual Studio C++ Build Tools（或支持预编译产物）的机器上安装后会自然回到 SQLite，无需改代码。
-- 待人工：在具备 C++ 构建工具/Node 20-22 的机器上安装 better-sqlite3，重复运行 `server/scripts/phase9a-gate.ts` 验证 `STORE_KIND=sqlite` 与垃圾 `.db` 重建日志。
+- 历史待人工：在具备 C++ 构建工具/Node 22+ 的机器上安装旧版 better-sqlite3 并验证 SQLite；v0.2.0 已升级到 better-sqlite3 13.2.0（N-API 预编译），在 Node 24 / Electron 45 下已验证 SQLite 可用。

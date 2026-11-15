@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "description": "CastHub 局域网投屏中枢",
   "main": "desktop/main.js",
@@ -27,7 +27,7 @@
     "ws": "^8.23.0"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^11.10.0"
+    "better-sqlite3": "^13.2.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.4",
@@ -45,6 +45,7 @@
   "build": {
     "appId": "io.casthub.app",
     "productName": "CastHub",
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },

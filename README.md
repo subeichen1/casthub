@@ -9,7 +9,7 @@
   <a href="https://github.com/subeichen1/casthub/actions/workflows/ci.yml"><img src="https://github.com/subeichen1/casthub/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI" /></a>
   <a href="https://github.com/subeichen1/casthub/releases/latest"><img src="https://img.shields.io/github/v/release/subeichen1/casthub?display_name=tag&sort=semver" alt="Latest release" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/subeichen1/casthub" alt="MIT License" /></a>
-  <img src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=node.js&logoColor=white" alt="Node.js 20+" />
+  <img src="https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white" alt="Node.js 22+" />
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Android%20TV%20%7C%20DLNA-0ea5e9" alt="Windows / Android TV / DLNA" />
 </p>
 
@@ -38,7 +38,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 | 组件 | 要求 |
 | --- | --- |
 | PC 中枢（桌面版） | Windows 10 / 11，无需安装 Node.js |
-| PC 中枢（源码 / 部署脚本） | Node.js 20+、npm，Windows / macOS / Linux |
+| PC 中枢（源码 / 部署脚本） | Node.js 22+、npm，Windows / macOS / Linux |
 | Android TV 客户端 | Android 6.0（API 23）及以上，约 8 MB 存储空间 |
 | 网络 | PC 与电视连接同一局域网，路由器未开启 AP 隔离 |
 
@@ -64,7 +64,7 @@ $p = Join-Path $env:TEMP 'CastHub-install.ps1'; iwr -UseBasicParsing https://git
 
 ### 方式二：源码一键启动（Windows / macOS / Linux）
 
-需要预先安装 **Node.js 20+** 和 Git。将下面整段命令粘贴到终端：
+需要预先安装 **Node.js 22+** 和 Git。将下面整段命令粘贴到终端：
 
 ```bash
 git clone --depth 1 https://github.com/subeichen1/casthub.git && cd casthub/server && npm install && npm start
@@ -152,17 +152,15 @@ CastHub 会按文件绝对路径记录播放位置，App（casthub）与 DLNA �
 
 ### Electron 打包
 
-`better-sqlite3` 是原生模块，Electron 打包前必须执行：
+`better-sqlite3` 13 起改用 N-API 并提供随包预编译二进制，通常无需单独按 Electron ABI 重建；`npm run dist` 会完成打包。若替换为自行编译的原生版本，可执行：
 
 ```bash
 npx electron-builder install-app-deps
 ```
 
-以按 Electron 的 ABI 重建原生模块；否则打包后的桌面版可能加载失败并降级为 JSON。
-
 ## 工作原理
 
-PC 中枢基于 Node.js 20 + TypeScript + Fastify + ws，在 `9420` 端口同时提供 REST（`/api/files`）、媒体流（`/media/*`，支持 Range）与控制台 WebSocket（`/console`）。电视端 App 使用 Kotlin + Media3（ExoPlayer），自身在 `9417` 端口启动 WebSocket 服务端，中枢作为客户端主动连接电视；两条 WS 通道彼此独立。
+PC 中枢基于 Node.js 22 + TypeScript + Fastify + ws，在 `9420` 端口同时提供 REST（`/api/files`）、媒体流（`/media/*`，支持 Range）与控制台 WebSocket（`/console`）。电视端 App 使用 Kotlin + Media3（ExoPlayer），自身在 `9417` 端口启动 WebSocket 服务端，中枢作为客户端主动连接电视；两条 WS 通道彼此独立。
 
 ```text
 浏览器控制台 ──WS /console──▶ PC 中枢(9420) ──WS 客户端──▶ 电视 App(9417)
@@ -372,7 +370,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和四条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和四条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 
