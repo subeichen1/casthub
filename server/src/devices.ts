@@ -65,7 +65,8 @@ function toView(device: Device): DeviceView {
     address: device.address,
     online: device.online,
     type: "casthub",
-    deviceName: device.deviceName
+    deviceName: device.deviceName,
+    volume: null
   };
 }
 

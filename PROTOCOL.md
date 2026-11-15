@@ -26,13 +26,13 @@
 | 控制台→中枢 | addDevice | {address, token} |
 | 控制台→中枢 | removeDevice | {id} |
 | 控制台→中枢 | cast | {deviceId, path, resume?}（resume 默认 true，见下方续播规则） |
-| 控制台→中枢 | control | {deviceId, action: pause\|resume\|stop\|seek, positionMs?} |
+| 控制台→中枢 | control | {deviceId, action: pause\|resume\|stop\|seek\|volume, positionMs?, value?}（volume 时 value 为 0-100 整数） |
 | 控制台→中枢 | refreshDevices | {}（立即重扫 DLNA 设备并广播最新 devices） |
 | 控制台→中枢 | getHistory | {} |
 | 控制台→中枢 | deleteHistory | {path} |
 | 控制台→中枢 | clearHistory | {} |
-| 中枢→控制台 | devices | {list: [{id, address, online, type: "casthub"\|"dlna", deviceName}]} |
-| 中枢→控制台 | tvStatus | {deviceId, state, positionMs, durationMs}（不变；历史由中枢内部消费） |
+| 中枢→控制台 | devices | {list: [{id, address, online, type: "casthub"\|"dlna", deviceName, volume?}]}（DLNA 音量 0-100；null/缺省表示不支持） |
+| 中枢→控制台 | tvStatus | {deviceId, state, positionMs, durationMs, volume?}（历史由中枢内部消费） |
 | 中枢→控制台 | history | {list: [{path, name, positionMs, durationMs, updatedAt, playCount, lastDeviceId}]}（updatedAt 倒序，最多 200 条） |
 | 中枢→控制台 | error | {message} |
 
@@ -50,6 +50,7 @@
 - 设备身份：`device.xml` 的 `UDN` 即设备 id。`addDevice` / `removeDevice` 仅适用于 `casthub` 类型；对 `dlna` 设备返回 `error {message: "DLNA 设备为自动发现，不支持手动增删"}`。
 - 投屏：`cast` 到 `dlna` 设备时，中枢调用 `SetAVTransportURI` → 500ms → `Play`；正在播放时先 `Stop`。若 `resume=true` 且存在有效历史位置，在 `Play` 后再等待 1s（500ms × 2）并发送 `Seek`。`control` 的 pause/resume/stop/seek 分别映射为 `Pause`/`Play`/`Stop`/`Seek`（Seek 的 Target 为 `H:MM:SS` 字符串）。
 - 状态：中枢每 1s 轮询 `GetTransportInfo` + `GetPositionInfo`，翻译成既有 `tvStatus` 消息。映射：`STOPPED`/`NO_MEDIA_PRESENT`→`idle`、`TRANSITIONING`→`buffering`、`PLAYING`→`playing`、`PAUSED_PLAYBACK`→`paused`。
+- 音量：从 `device.xml` 的 `RenderingControl:1` 服务解析独立 `controlURL`，发现设备后立即 `GetVolume` 一次，之后每 2s 轮询一次；`control` 的 `volume` 映射为 `SetVolume`（`Channel=Master`，`DesiredVolume` 为 0-100 整数）。`devices.list[].volume` 与 `tvStatus.volume` 为 `number | null`；`null` 表示该电视不支持 RenderingControl 或音量语义特殊。SetVolume 单次失败只回 `error`，不判设备离线。
 - 测试降级：环境变量 `DLNA_SEED`（逗号分隔的 `device.xml` URL）可跳过 SSDP 直接注入设备，用于 AP 隔离网络或沙箱多播不可达场景。
 
 ## REST

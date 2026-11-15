@@ -11,6 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.resolve(__dirname, "..");
 const HTTP_PORT = Number(process.env.E2E_DLNA_PORT ?? 9430);
 const CONSOLE_TOKEN = "e2e-dlna-token-2024";
+const FAKE_DEVICE_NAME = "Fake DLNA TV";
 
 const children = [];
 let exiting = false;
@@ -191,11 +192,16 @@ async function connectConsole() {
   return client;
 }
 
+function isFakeDlnaDevice(device) {
+  return device.type === "dlna" && device.deviceName === FAKE_DEVICE_NAME;
+}
+
 async function waitDlnaDevice(client, timeoutMs) {
+  // 本机可能同时发现真实电视；e2e 必须只锁定 fake-dlna，否则环境差异会让断言不确定。
   return client.waitFor(
-    (m) => m.type === "devices" && Array.isArray(m.list) && m.list.some((d) => d.type === "dlna"),
+    (m) => m.type === "devices" && Array.isArray(m.list) && m.list.some(isFakeDlnaDevice),
     timeoutMs,
-    "devices 中出现 type=dlna"
+    `devices 中出现 ${FAKE_DEVICE_NAME}`
   );
 }
 
@@ -239,9 +245,9 @@ async function main() {
     dlnaMsg = await waitDlnaDevice(client, 8000);
     console.log("DLNA_SEED 降级路径生效");
   }
-  const device = dlnaMsg.list.find((d) => d.type === "dlna");
+  const device = dlnaMsg.list.find(isFakeDlnaDevice);
   assert(!!device, `DLNA 设备出现: ${device.deviceName} (${device.id})`);
-  assert(device.deviceName === "Fake DLNA TV", "deviceName 来自 device.xml friendlyName");
+  assert(device.deviceName === FAKE_DEVICE_NAME, "deviceName 来自 device.xml friendlyName");
 
   console.log("[4/12] 浏览文件 ...");
   const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
@@ -258,6 +264,29 @@ async function main() {
   );
   assert(playing.durationMs > 0, `DLNA 进入 playing（duration=${playing.durationMs}ms）`);
   await fake.waitFor(/MEDIA_PROBE 206/, 5000, "fake-dlna Range 探测 206");
+
+  console.log("[5.1/12] 验证 RenderingControl 初始音量与 SetVolume ...");
+  const volumeReady = await client.waitFor(
+    (m) => m.type === "devices" && m.list.some((d) => d.id === device.id && d.volume === 50),
+    6000,
+    "devices 中 DLNA volume=50"
+  );
+  const initialDevice = volumeReady.list.find((d) => d.id === device.id);
+  assert(initialDevice.volume === 50, `发现后 GetVolume 初始值 volume=${initialDevice.volume}`);
+  client.send({ type: "control", deviceId: device.id, action: "volume", value: 40 });
+  const volume40 = await client.waitFor(
+    (m) => m.type === "tvStatus" && m.deviceId === device.id && m.volume === 40,
+    6000,
+    "tvStatus.volume=40"
+  );
+  assert(volume40.volume === 40, `SetVolume 40 生效 volume=${volume40.volume}`);
+  client.send({ type: "control", deviceId: device.id, action: "volume", value: 100 });
+  const volume100 = await client.waitFor(
+    (m) => m.type === "tvStatus" && m.deviceId === device.id && m.volume === 100,
+    6000,
+    "tvStatus.volume=100"
+  );
+  assert(volume100.volume === 100, `SetVolume 100 生效 volume=${volume100.volume}`);
 
   console.log("[6/12] pause ...");
   client.send({ type: "control", deviceId: device.id, action: "pause" });
@@ -294,7 +323,7 @@ async function main() {
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
   client = await connectConsole();
   const dlnaMsg2 = await waitDlnaDevice(client, 8000);
-  const device2 = dlnaMsg2.list.find((d) => d.type === "dlna");
+  const device2 = dlnaMsg2.list.find(isFakeDlnaDevice);
   assert(!!device2, `重启后 DLNA 设备出现: ${device2.deviceName} (${device2.id})`);
 
   console.log("[10/12] getHistory 断言重启后历史仍在 ...");

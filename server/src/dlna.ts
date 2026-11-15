@@ -18,7 +18,9 @@ const MAX_SSDP_LOCATIONS = 64;
 const MAX_XML_BYTES = 512 * 1024;
 const MAX_SOAP_BYTES = 512 * 1024;
 const STALE_DEVICE_MS = 5 * 60 * 1000;
+const VOLUME_POLL_INTERVAL_MS = 2000;
 const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
+const RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1";
 const MEDIA_RENDERER = "urn:schemas-upnp-org:device:MediaRenderer:1";
 
 export interface DlnaDeviceInfo {
@@ -26,6 +28,8 @@ export interface DlnaDeviceInfo {
   deviceName: string;
   address: string;
   controlURL: string;
+  /** RenderingControl 服务的 controlURL；设备不提供该服务时为 null。 */
+  renderingControlURL: string | null;
 }
 
 interface DlnaRuntime {
@@ -34,6 +38,9 @@ interface DlnaRuntime {
   failures: number;
   pollTimer: NodeJS.Timeout | null;
   polling: boolean;
+  volumeTimer: NodeJS.Timeout | null;
+  volumePolling: boolean;
+  volume: number | null;
   lastStatus: TvStatusPayload | null;
   lastSeenAt: number;
 }
@@ -354,11 +361,27 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
   } catch {
     return null;
   }
+  // RenderingControl 与 AVTransport 是两个独立服务、两个 controlURL，不能复用。
+  const renderingControl = services.find((service) =>
+    String(service.serviceType ?? "").includes(":service:RenderingControl:")
+  );
+  let renderingControlURL: string | null = null;
+  if (renderingControl) {
+    const renderingRaw = String(renderingControl.controlURL ?? "").trim().slice(0, 2048);
+    if (renderingRaw) {
+      try {
+        renderingControlURL = new URL(renderingRaw, location).toString();
+      } catch {
+        renderingControlURL = null;
+      }
+    }
+  }
   return {
     id: udn,
     deviceName: String(device.friendlyName ?? "DLNA 电视").trim().slice(0, 64) || "DLNA 电视",
     address: location,
-    controlURL
+    controlURL,
+    renderingControlURL
   };
 }
 
@@ -386,7 +409,8 @@ export class DlnaService {
       address: runtime.info.address,
       online: runtime.online,
       type: "dlna" as const,
-      deviceName: runtime.info.deviceName
+      deviceName: runtime.info.deviceName,
+      volume: runtime.volume
     }));
   }
 
@@ -507,7 +531,12 @@ export class DlnaService {
     runtime.online = true;
     runtime.failures = 0;
     runtime.lastSeenAt = Date.now();
-    runtime.lastStatus = { state: "buffering", positionMs: 0, durationMs: runtime.lastStatus?.durationMs ?? 0 };
+    runtime.lastStatus = {
+      state: "buffering",
+      positionMs: 0,
+      durationMs: runtime.lastStatus?.durationMs ?? 0,
+      volume: runtime.volume
+    };
     this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     this.startPolling(runtime);
     this.emitDevices();
@@ -524,10 +553,30 @@ export class DlnaService {
     }
   }
 
-  async control(id: string, action: "pause" | "resume" | "stop" | "seek", positionMs?: number): Promise<boolean> {
+  async control(
+    id: string,
+    action: "pause" | "resume" | "stop" | "seek" | "volume",
+    positionMs?: number,
+    value?: number
+  ): Promise<boolean> {
     if (this.disposed) return false;
     const runtime = this.devices.get(id);
     if (!runtime) return false;
+    if (action === "volume") {
+      if (!runtime.info.renderingControlURL) return false;
+      if (!Number.isFinite(value) || (value as number) < 0 || (value as number) > 100) return false;
+      const volume = Math.round(value as number);
+      await this.soap(
+        runtime,
+        "SetVolume",
+        "<InstanceID>0</InstanceID><Channel>Master</Channel>" +
+          `<DesiredVolume>${volume}</DesiredVolume>`,
+        RENDERING_CONTROL,
+        runtime.info.renderingControlURL
+      );
+      this.applyVolume(runtime, volume);
+      return true;
+    }
     if (action === "seek") {
       if (!Number.isFinite(positionMs) || (positionMs as number) < 0) return false;
       await this.soap(
@@ -539,7 +588,8 @@ export class DlnaService {
       runtime.lastStatus = {
         state: runtime.lastStatus?.state ?? "playing",
         positionMs: Math.round(positionMs as number),
-        durationMs: runtime.lastStatus?.durationMs ?? 0
+        durationMs: runtime.lastStatus?.durationMs ?? 0,
+        volume: runtime.volume
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
       return true;
@@ -551,7 +601,8 @@ export class DlnaService {
       runtime.lastStatus = {
         state: "idle",
         positionMs: 0,
-        durationMs: runtime.lastStatus?.durationMs ?? 0
+        durationMs: runtime.lastStatus?.durationMs ?? 0,
+        volume: runtime.volume
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     }
@@ -566,6 +617,8 @@ export class DlnaService {
     for (const runtime of this.devices.values()) {
       if (runtime.pollTimer) clearInterval(runtime.pollTimer);
       runtime.pollTimer = null;
+      if (runtime.volumeTimer) clearInterval(runtime.volumeTimer);
+      runtime.volumeTimer = null;
     }
     const pendingDiscover = this.discoverPromise;
     if (pendingDiscover) await Promise.allSettled([pendingDiscover]);
@@ -600,6 +653,7 @@ export class DlnaService {
     for (const [id, runtime] of this.devices) {
       if (!seenIds.has(id) && !runtime.online && now - runtime.lastSeenAt > STALE_DEVICE_MS) {
         if (runtime.pollTimer) clearInterval(runtime.pollTimer);
+        if (runtime.volumeTimer) clearInterval(runtime.volumeTimer);
         this.devices.delete(id);
         console.log(`[dlna] 清理离线设备 ${runtime.info.deviceName}`);
       }
@@ -616,6 +670,7 @@ export class DlnaService {
         existing.online = true;
         this.emitDevices();
       }
+      this.startVolumePolling(existing);
       return;
     }
     if (this.devices.size >= MAX_DEVICES) {
@@ -628,20 +683,30 @@ export class DlnaService {
       failures: 0,
       pollTimer: null,
       polling: false,
+      volumeTimer: null,
+      volumePolling: false,
+      volume: null,
       lastStatus: null,
       lastSeenAt: Date.now()
     });
     console.log(`${source} ${info.deviceName} ${info.controlURL}`);
     this.emitDevices();
+    this.startVolumePolling(this.devices.get(info.id) as DlnaRuntime);
   }
 
-  private async soap(runtime: DlnaRuntime, action: string, inner: string): Promise<string> {
-    const controlUrl = await assertSafeUrl(runtime.info.controlURL, this.allowLoopback);
+  private async soap(
+    runtime: DlnaRuntime,
+    action: string,
+    inner: string,
+    serviceType: string = AV_TRANSPORT,
+    controlURL: string = runtime.info.controlURL
+  ): Promise<string> {
+    const controlUrl = await assertSafeUrl(controlURL, this.allowLoopback);
     const body =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
       's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>' +
-      `<u:${action} xmlns:u="${AV_TRANSPORT}">${inner}</u:${action}>` +
+      `<u:${action} xmlns:u="${serviceType}">${inner}</u:${action}>` +
       "</s:Body></s:Envelope>";
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4000);
@@ -651,7 +716,7 @@ export class DlnaService {
         redirect: "manual",
         headers: {
           "Content-Type": 'text/xml; charset="utf-8"',
-          SOAPACTION: `"${AV_TRANSPORT}#${action}"`
+          SOAPACTION: `"${serviceType}#${action}"`
         },
         body,
         signal: controller.signal
@@ -664,6 +729,51 @@ export class DlnaService {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private startVolumePolling(runtime: DlnaRuntime): void {
+    if (this.disposed || !runtime.info.renderingControlURL || runtime.volumeTimer) return;
+    // 发现设备后先立即 GetVolume 一次，之后独立 2s 轮询，与 1s 播放轮询分开。
+    this.runVolumePoll(runtime, true);
+    runtime.volumeTimer = setInterval(() => this.runVolumePoll(runtime), VOLUME_POLL_INTERVAL_MS);
+  }
+
+  private runVolumePoll(runtime: DlnaRuntime, initial = false): void {
+    const promise = this.refreshVolume(runtime, initial).finally(() => {
+      this.activePolls.delete(promise);
+    });
+    this.activePolls.add(promise);
+  }
+
+  private async refreshVolume(runtime: DlnaRuntime, initial = false): Promise<void> {
+    if (this.disposed || !runtime.info.renderingControlURL || runtime.volumePolling) return;
+    runtime.volumePolling = true;
+    try {
+      const xml = await this.soap(
+        runtime,
+        "GetVolume",
+        "<InstanceID>0</InstanceID><Channel>Master</Channel>",
+        RENDERING_CONTROL,
+        runtime.info.renderingControlURL
+      );
+      const parsed = Number.parseInt(localValue(xml, "CurrentVolume"), 10);
+      this.applyVolume(runtime, Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null);
+    } catch {
+      // 音量不可用不等于设备离线；仅首次探测失败把 volume 标为 null。
+      if (initial) this.applyVolume(runtime, null);
+    } finally {
+      runtime.volumePolling = false;
+    }
+  }
+
+  private applyVolume(runtime: DlnaRuntime, volume: number | null): void {
+    if (runtime.volume === volume) return;
+    runtime.volume = volume;
+    if (runtime.lastStatus) {
+      runtime.lastStatus = { ...runtime.lastStatus, volume };
+      this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
+    }
+    this.emitDevices();
   }
 
   private startPolling(runtime: DlnaRuntime): void {
@@ -713,7 +823,8 @@ export class DlnaService {
       runtime.lastStatus = {
         state,
         positionMs: position,
-        durationMs: duration
+        durationMs: duration,
+        volume: runtime.volume
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     } catch {

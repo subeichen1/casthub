@@ -314,17 +314,38 @@ export function attachConsoleWs(
           case "control": {
             const deviceId = String(msg.deviceId ?? "");
             const action = String(msg.action ?? "");
-            if (!["pause", "resume", "stop", "seek"].includes(action)) {
+            if (!["pause", "resume", "stop", "seek", "volume"].includes(action)) {
               sendJson(ws, { type: "error", message: `未知控制指令: ${action}` });
               return;
             }
             const positionMs = msg.positionMs === undefined ? undefined : Number(msg.positionMs);
+            const value = msg.value === undefined ? undefined : Number(msg.value);
             if (devices.has(deviceId)) {
+              if (action === "volume") {
+                sendJson(ws, { type: "error", message: "casthub 设备不支持音量控制" });
+                break;
+              }
               const ok = devices.control(deviceId, action as "pause" | "resume" | "stop" | "seek", positionMs);
               if (!ok) sendJson(ws, { type: "error", message: "设备不在线或参数错误" });
             } else if (dlna.has(deviceId)) {
-              const ok = await dlna.control(deviceId, action as "pause" | "resume" | "stop" | "seek", positionMs);
-              if (!ok) sendJson(ws, { type: "error", message: "设备不在线或参数错误" });
+              try {
+                const ok = await dlna.control(
+                  deviceId,
+                  action as "pause" | "resume" | "stop" | "seek" | "volume",
+                  positionMs,
+                  value
+                );
+                if (!ok) {
+                  sendJson(ws, {
+                    type: "error",
+                    message: action === "volume" ? "音量控制失败（设备可能不支持）" : "设备不在线或参数错误"
+                  });
+                }
+              } catch (error) {
+                if (action !== "volume") throw error;
+                console.error("[console-ws] 音量控制失败:", error);
+                sendJson(ws, { type: "error", message: "音量控制失败（设备可能不支持）" });
+              }
             } else {
               sendJson(ws, { type: "error", message: "设备不存在" });
             }

@@ -10,11 +10,15 @@ const HTTP_PORT = Number(process.env.FAKE_DLNA_HTTP_PORT ?? 0);
 const NAME = process.env.FAKE_DLNA_NAME ?? "Fake DLNA TV";
 const UDN = "uuid:" + randomUUID();
 const DURATION_MS = Number(process.env.FAKE_DLNA_DURATION_MS ?? 60000);
+const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
+const RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1";
 
 let transportState = "STOPPED";
 let positionMs = 0;
 let lastTick = Date.now();
 let currentUri = "";
+let volume = 50;
+let muted = false;
 
 function settlePosition() {
   if (transportState === "PLAYING") {
@@ -72,7 +76,7 @@ function sendXml(res, statusCode, body) {
   res.end(body);
 }
 
-function soapResponse(action, fields) {
+function soapResponse(action, fields, serviceType = AV_TRANSPORT) {
   const inner = Object.entries(fields)
     .map(([key, value]) => "<" + key + ">" + xmlEscape(value) + "</" + key + ">")
     .join("");
@@ -80,7 +84,7 @@ function soapResponse(action, fields) {
     '<?xml version="1.0" encoding="utf-8"?>' +
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
     's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>' +
-    '<u:' + action + 'Response xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">' +
+    '<u:' + action + 'Response xmlns:u="' + serviceType + '">' +
     inner +
     "</u:" + action + "Response></s:Body></s:Envelope>"
   );
@@ -106,23 +110,42 @@ function deviceXml() {
     "<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>" +
     "<friendlyName>" + xmlEscape(NAME) + "</friendlyName>" +
     "<UDN>" + UDN + "</UDN>" +
-    "<serviceList><service>" +
-    "<serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>" +
+    "<serviceList>" +
+    "<service>" +
+    "<serviceType>" + AV_TRANSPORT + "</serviceType>" +
     "<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>" +
     "<controlURL>/control</controlURL>" +
     "<eventSubURL>/event</eventSubURL>" +
-    "<SCPDURL>/scpd.xml</SCPDURL>" +
-    "</service></serviceList>" +
+    "<SCPDURL>/scpd/avtransport.xml</SCPDURL>" +
+    "</service>" +
+    "<service>" +
+    "<serviceType>" + RENDERING_CONTROL + "</serviceType>" +
+    "<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>" +
+    "<controlURL>/control</controlURL>" +
+    "<eventSubURL>/event</eventSubURL>" +
+    "<SCPDURL>/scpd/renderingcontrol.xml</SCPDURL>" +
+    "</service>" +
+    "</serviceList>" +
     "</device></root>"
   );
 }
 
-function scpdXml() {
+function scpdXml(service) {
+  const actions =
+    service === "renderingcontrol"
+      ? "<actionList>" +
+        "<action><name>GetVolume</name></action>" +
+        "<action><name>SetVolume</name></action>" +
+        "<action><name>GetMute</name></action>" +
+        "<action><name>SetMute</name></action>" +
+        "</actionList>"
+      : "<actionList></actionList>";
   return (
     '<?xml version="1.0"?>' +
     '<scpd xmlns="urn:schemas-upnp-org:service-1-0">' +
     "<specVersion><major>1</major><minor>0</minor></specVersion>" +
-    "<actionList></actionList></scpd>"
+    actions +
+    "</scpd>"
   );
 }
 
@@ -142,6 +165,8 @@ function readBody(req) {
 async function handleSoap(req, res) {
   const body = await readBody(req);
   const soapAction = String(req.headers.soapaction || "");
+  const serviceMatch = /^"?(urn:[^#"]+)#/.exec(soapAction);
+  const serviceType = serviceMatch ? serviceMatch[1] : "";
   const match = /#([A-Za-z0-9_]+)"?$/.exec(soapAction);
   const action = match ? match[1] : "";
   if (!action) {
@@ -149,6 +174,31 @@ async function handleSoap(req, res) {
     return;
   }
   try {
+    if (serviceType === RENDERING_CONTROL && action === "GetVolume") {
+      sendXml(res, 200, soapResponse(action, { CurrentVolume: String(volume) }, serviceType));
+      return;
+    }
+    if (serviceType === RENDERING_CONTROL && action === "SetVolume") {
+      const raw = tagValue(body, "DesiredVolume");
+      if (!/^\d+$/.test(raw)) throw new Error("DesiredVolume 必须是整数");
+      const next = Number(raw);
+      if (next < 0 || next > 100) throw new Error("DesiredVolume 越界");
+      volume = next;
+      console.log("VOLUME " + volume);
+      sendXml(res, 200, soapResponse(action, {}, serviceType));
+      return;
+    }
+    if (serviceType === RENDERING_CONTROL && action === "GetMute") {
+      sendXml(res, 200, soapResponse(action, { CurrentMute: muted ? "1" : "0" }, serviceType));
+      return;
+    }
+    if (serviceType === RENDERING_CONTROL && action === "SetMute") {
+      const raw = tagValue(body, "DesiredMute");
+      if (raw !== "0" && raw !== "1") throw new Error("DesiredMute 必须是 0/1");
+      muted = raw === "1";
+      sendXml(res, 200, soapResponse(action, {}, serviceType));
+      return;
+    }
     if (action === "SetAVTransportURI") {
       const uri = tagValue(body, "CurrentURI");
       if (!uri) throw new Error("CurrentURI 为空");
@@ -240,7 +290,15 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "GET" && req.url === "/scpd.xml") {
-    sendXml(res, 200, scpdXml());
+    sendXml(res, 200, scpdXml("avtransport"));
+    return;
+  }
+  if (req.method === "GET" && req.url === "/scpd/avtransport.xml") {
+    sendXml(res, 200, scpdXml("avtransport"));
+    return;
+  }
+  if (req.method === "GET" && req.url === "/scpd/renderingcontrol.xml") {
+    sendXml(res, 200, scpdXml("renderingcontrol"));
     return;
   }
   if (req.method === "POST" && req.url === "/control") {
