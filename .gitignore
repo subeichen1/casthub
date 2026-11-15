@@ -3,6 +3,8 @@ dist/
 release/
 server/media/*
 !server/media/.gitkeep
+server/data/
+data/
 *.log
 config.json
 console-token.txt
