@@ -9,6 +9,8 @@ import type { DeviceView, TvState, TvStatusPayload } from "./types";
 const SSDP_ADDRESS = "239.255.255.250";
 const SSDP_PORT = 1900;
 const SSDP_TIMEOUT_MS = 5000;
+const DISCOVER_INTERVAL_MS = 60000;
+const DISCOVER_RETRY_MS = 15000;
 const POLL_INTERVAL_MS = 1000;
 const OFFLINE_FAILURE_LIMIT = 5;
 const MAX_DEVICES = 64;
@@ -177,7 +179,10 @@ function isPrivateAddress(address: string): boolean {
 
 function isLocalNetworkAddress(address: string, allowLoopback: boolean): boolean {
   if (isLoopbackAddress(address)) return allowLoopback;
-  if (!net.isIPv4(address)) return isPrivateAddress(address);
+  // SECURITY.md 的 DLNA 白名单是「同网段或私网」：私网地址即使不在本机网段也允许，
+  // 否则双路由/VLAN/访客网络下电视能被 SSDP 发现却会被来源过滤误杀。
+  if (isPrivateAddress(address)) return true;
+  if (!net.isIPv4(address)) return false;
   for (const infos of Object.values(os.networkInterfaces())) {
     for (const info of infos ?? []) {
       if (!info || info.family !== "IPv4" || info.internal) continue;
@@ -185,6 +190,22 @@ function isLocalNetworkAddress(address: string, allowLoopback: boolean): boolean
     }
   }
   return false;
+}
+
+function ssdpInterfaceAddresses(allowLoopback: boolean): string[] {
+  const addresses: string[] = [];
+  const add = (address: string): void => {
+    if (!addresses.includes(address)) addresses.push(address);
+  };
+  if (allowLoopback) add("127.0.0.1");
+  for (const infos of Object.values(os.networkInterfaces())) {
+    for (const info of infos ?? []) {
+      if (!info || info.internal || info.family !== "IPv4") continue;
+      // 只在私网 IPv4 网卡上发 SSDP，避免把多播包发进 VPN/公网网卡。
+      if (isPrivateAddress(info.address)) add(info.address);
+    }
+  }
+  return addresses;
 }
 
 async function assertSafeUrl(raw: string, allowLoopback: boolean): Promise<URL> {
@@ -266,7 +287,7 @@ function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
       console.error(`[dlna] SSDP ${st} 错误: ${error.message}`);
       finish();
     });
-    socket.bind(() => {
+    socket.bind(0, "0.0.0.0", () => {
       const packet = Buffer.from(
         [
           "M-SEARCH * HTTP/1.1",
@@ -278,11 +299,28 @@ function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
           ""
         ].join("\r\n")
       );
+      const addresses = ssdpInterfaceAddresses(allowLoopback);
+      const targets: Array<string | null> = addresses.length > 0 ? addresses : [null];
+      try {
+        socket.setMulticastTTL(4);
+      } catch {
+        // ignore
+      }
       let sent = 0;
       const sendOne = (): void => {
-        socket.send(packet, SSDP_PORT, SSDP_ADDRESS, (error) => {
-          if (error) console.error(`[dlna] SSDP ${st} 发送失败: ${error.message}`);
-        });
+        for (const address of targets) {
+          if (address) {
+            try {
+              socket.setMulticastInterface(address);
+            } catch (error) {
+              console.error(`[dlna] SSDP ${st} 设置网卡失败 ${address}: ${(error as Error).message}`);
+              continue;
+            }
+          }
+          socket.send(packet, SSDP_PORT, SSDP_ADDRESS, (error) => {
+            if (error) console.error(`[dlna] SSDP ${st} 发送失败: ${error.message}`);
+          });
+        }
         sent += 1;
         if (sent < 3) setTimeout(sendOne, 300);
       };
@@ -369,12 +407,27 @@ export class DlnaService {
     if (this.started) return;
     this.started = true;
     this.disposed = false;
+    this.runDiscoveryCycle();
+  }
+
+  private runDiscoveryCycle(): void {
+    if (this.disposed) return;
     const first = this.discover();
     this.discoverPromise = first;
     void first.finally(() => {
       if (this.discoverPromise === first) this.discoverPromise = null;
+      this.scheduleNextDiscovery();
     });
-    this.discoverTimer = setInterval(() => void this.discover(), 60000);
+  }
+
+  private scheduleNextDiscovery(): void {
+    if (this.disposed) return;
+    if (this.discoverTimer) clearTimeout(this.discoverTimer);
+    const delay = this.devices.size > 0 ? DISCOVER_INTERVAL_MS : DISCOVER_RETRY_MS;
+    this.discoverTimer = setTimeout(() => {
+      this.discoverTimer = null;
+      this.runDiscoveryCycle();
+    }, delay);
   }
 
   async discover(): Promise<DlnaDeviceInfo[]> {
@@ -497,7 +550,7 @@ export class DlnaService {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.started = false;
-    if (this.discoverTimer) clearInterval(this.discoverTimer);
+    if (this.discoverTimer) clearTimeout(this.discoverTimer);
     this.discoverTimer = null;
     for (const runtime of this.devices.values()) {
       if (runtime.pollTimer) clearInterval(runtime.pollTimer);
