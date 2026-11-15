@@ -147,6 +147,11 @@
     .dlna-options input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
     .dlna-options .hint { margin-top: 6px; color: #d6b65c; }
     .hint { color: #64748b; font-size: 12px; line-height: 1.6; margin-top: 12px; }
+    .desktop-settings-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; }
+    .desktop-settings-row label { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 13px; cursor: pointer; }
+    .desktop-settings-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--blue); }
+    .desktop-settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+    .desktop-version { color: var(--muted); font-size: 12px; white-space: nowrap; }
     #toast {
       position: fixed;
       right: 24px;
@@ -263,6 +268,21 @@
       <div id="historyList" class="history-list">
         <div class="empty">暂无播放历史</div>
       </div>
+    </section>
+
+    <section id="desktopSettingsPanel" class="panel" hidden>
+      <div class="panel-head">
+        <h2>桌面设置</h2>
+        <span id="desktopVersion" class="desktop-version"></span>
+      </div>
+      <div class="desktop-settings-row">
+        <label><input id="autoStartToggle" type="checkbox" /> 开机自启</label>
+      </div>
+      <div class="desktop-settings-actions">
+        <button id="desktopCheckUpdatesBtn" class="secondary small">检查更新</button>
+        <span id="updateStatus" class="hint" style="margin-top:0"></span>
+      </div>
+      <div class="hint">仅桌面版显示。portable 版开启自启后请勿移动 exe，移动后启动项会失效。</div>
     </section>
     </div>
 

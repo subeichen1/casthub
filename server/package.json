@@ -17,7 +17,7 @@
     "e2e": "node scripts/e2e.mjs",
     "e2e-history": "node scripts/e2e-history.mjs",
     "perf": "node scripts/perf-smoke.mjs",
-    "desktop": "electron desktop/main.js",
+    "desktop": "electron .",
     "dist": "electron-builder --win portable"
   },
   "dependencies": {

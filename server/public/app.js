@@ -64,6 +64,11 @@
     volumeHint: document.getElementById("volumeHint"),
     dlnaOptions: document.getElementById("dlnaOptions"),
     dlnaSubtitles: document.getElementById("dlnaSubtitles"),
+    desktopSettingsPanel: document.getElementById("desktopSettingsPanel"),
+    desktopVersion: document.getElementById("desktopVersion"),
+    autoStartToggle: document.getElementById("autoStartToggle"),
+    desktopCheckUpdatesBtn: document.getElementById("desktopCheckUpdatesBtn"),
+    updateStatus: document.getElementById("updateStatus"),
     toast: document.getElementById("toast")
   };
 
@@ -624,6 +629,69 @@
     sendVolume(Number(els.volumeSlider.value));
   });
 
+  function setUpdateStatus(message) {
+    els.updateStatus.textContent = message || "";
+  }
+
+  function applyDesktopSettings(settings) {
+    if (!settings) return;
+    els.autoStartToggle.checked = settings.autoStart === true;
+    els.desktopVersion.textContent = settings.version ? "v" + settings.version : "";
+    if (settings.updateAvailable && settings.updateAvailable.version) {
+      setUpdateStatus("发现新版本 v" + settings.updateAvailable.version);
+    }
+  }
+
+  function initDesktopSettings() {
+    const desktop = window.casthubDesktop;
+    if (!desktop) return;
+    els.desktopSettingsPanel.hidden = false;
+    desktop.getSettings().then(applyDesktopSettings).catch(function () {
+      showToast("读取桌面设置失败", true);
+    });
+    // 托盘菜单也能改开机自启；窗口重新获得焦点时从 config.json 刷新开关，保证双向同步。
+    window.addEventListener("focus", function () {
+      desktop.getSettings().then(applyDesktopSettings).catch(function () { /* ignore */ });
+    });
+    els.autoStartToggle.addEventListener("change", function () {
+      const target = els.autoStartToggle.checked;
+      els.autoStartToggle.disabled = true;
+      desktop.setAutoStart(target).then(function (result) {
+        els.autoStartToggle.checked = !!(result && result.autoStart);
+        if (!result || !result.ok) {
+          showToast("设置开机自启失败: " + (result && result.error ? result.error : "未知错误"), true);
+          return;
+        }
+        showToast(result.autoStart ? "已开启开机自启" : "已关闭开机自启");
+      }).catch(function (error) {
+        els.autoStartToggle.checked = !target;
+        showToast("设置开机自启失败: " + error.message, true);
+      }).finally(function () {
+        els.autoStartToggle.disabled = false;
+      });
+    });
+    els.desktopCheckUpdatesBtn.addEventListener("click", function () {
+      els.desktopCheckUpdatesBtn.disabled = true;
+      setUpdateStatus("正在检查…");
+      desktop.checkUpdates().then(function (result) {
+        if (result && result.status === "found") setUpdateStatus("发现新版本 v" + result.latest);
+        else if (result && result.status === "latest") setUpdateStatus("已是最新版本");
+        else if (result && result.status === "skipped") setUpdateStatus("未配置更新仓库");
+        else setUpdateStatus("检查失败: " + (result && result.message ? result.message : "未知错误"));
+      }).catch(function (error) {
+        setUpdateStatus("检查失败: " + error.message);
+      }).finally(function () {
+        els.desktopCheckUpdatesBtn.disabled = false;
+      });
+    });
+    desktop.onUpdateAvailable(function (info) {
+      if (info && info.version) {
+        setUpdateStatus("发现新版本 v" + info.version);
+        showToast("发现新版本 v" + info.version + "，可在托盘菜单下载");
+      }
+    });
+  }
+
   els.connectBtn.addEventListener("click", function () {
     const token = els.consoleTokenInput.value.trim();
     if (token.length < 16) {
@@ -653,4 +721,5 @@
   }
 
   start();
+  initDesktopSettings();
 })();
