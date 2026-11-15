@@ -42,6 +42,14 @@
 - Release：id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
 - 说明：本次使用开发自签名证书，Windows 可能显示“未知发布者”，生产分发需替换正式证书；未手工上传本地 unsigned 构建产物。
 
+## Phase 8L — v0.2.0 正式 Release（已完成，2026-11-15）
+
+- 发布提交：`c3aa10458c8f042da47b9c8c72c9242ba6fe9b4a`（`fix: use better-sqlite3 N-API build for Electron 45`），包含多格式 DLNA 外挂字幕与 `better-sqlite3` 13.2.0（N-API 预编译）升级。
+- Release workflow：run id `43706644078`，tag `v0.2.0`，结论 `success`；windows / android / source / publish 四个 job 全部通过。
+- Release：id `445993590`，<https://github.com/subeichen1/casthub/releases/tag/v0.2.0>；资产 `CastHub.exe`（119,625,936 字节）、`CastHub-TV.apk`（1,824,057 字节）、`casthub-src.tar.gz`（1,971,821 字节）、`checksums.txt`（244 字节）。
+- CI：run `43706624549`，main `c3aa104`，Node 22 与 Android TV (API 34) 两个 job 均 `success`。
+- 说明：首次 run `43705305608` 因 `better-sqlite3@11.10.0` 与 Electron 45 不兼容在 Windows 打包阶段失败，已由 13.2.0 N-API 版本修复；本次仍为开发自签名证书，生产分发需替换正式证书。
+
 ## Phase 9A — better-sqlite3 原生模块（当前环境降级 JSON，待人工在有构建工具机器验证 SQLite）
 
 - 真实执行 `npm.cmd install better-sqlite3@^11 --save`（server 目录）退出码 1；关键输出：

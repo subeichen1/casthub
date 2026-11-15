@@ -307,3 +307,11 @@ $ git log --oneline
 - Release：tag `v0.1.1`，release id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
 - Actions：Release workflow run id `43617653552`，windows / android / source / publish 四个 job 全部 `success`；Windows Authenticode 验证与 Android APK 签名验证步骤均通过。发布相关文档提交后的 CI run id `43618122110`、`43618395855` 均为 `success`。
 
+## Phase 8L — v0.2.0 发布记录（2026-11-15）
+
+- 发布提交：`c3aa10458c8f042da47b9c8c72c9242ba6fe9b4a`（`fix: use better-sqlite3 N-API build for Electron 45`），包含 v0.2.0 多格式 DLNA 外挂字幕功能与 `better-sqlite3` 13.2.0 升级。
+- Tag：annotated tag `v0.2.0` = `4d028f6585bab8ccc88d6d7679ab7de5660a7998`；<https://github.com/subeichen1/casthub/releases/tag/v0.2.0>。
+- Release：id `445993590`；资产 `CastHub.exe`（119,625,936 字节）、`CastHub-TV.apk`（1,824,057 字节）、`casthub-src.tar.gz`（1,971,821 字节）、`checksums.txt`（244 字节）。
+- Actions：Release workflow run `43706644078`，windows / android / source / publish 四个 job 全部 `success`，Windows Authenticode 与 Android APK 签名验证均通过；CI run `43706624549`（Server (Node 22)、Android TV (API 34)）`success`。
+- 备注：首次 v0.2.0 Release run `43705305608` 因 `better-sqlite3@11.10.0` 与 Electron 45 的 V8 API 不兼容，在 Windows 打包阶段失败；改用 N-API 版 `better-sqlite3@13.2.0` 并设置 `npmRebuild:false` 后重跑成功。
+
