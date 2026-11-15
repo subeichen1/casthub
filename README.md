@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.1.1**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.2.0**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -306,12 +306,26 @@ tv-app/app/build/outputs/apk/release/app-release.apk
 
 ### 限制清单
 
-- **字幕是厂商扩展，尽力而为**：DLNA 没有统一的字幕协议。中枢会把视频同目录、同名的 `.srt` 以 Samsung `sec:CaptionInfoEx`（属性式 `sec:type="srt"`）与 Sony `pv:subtitleFileUri` 两种扩展写入 DIDL-Lite，并在 `/media` 的 GET/HEAD 响应中加 `CaptionInfo.sec` 头。不同品牌、型号的识别率差异很大，不保证一定能显示。Sony 官方支持文档明确写「DLNA 服务器不支持 srt 字幕显示」，这类电视请改用主路线 CastHub App（字幕处理见「字幕」相关章节）。字幕文件会统一转成 UTF-8 srt，`Content-Type` 为 `application/x-subrip; charset=utf-8`；个别电视只认 `text/plain` 时，可把 `server/src/files.ts` 的 `MIME_TYPES` 中 `.srt` 值改成 `text/plain` 后重启中枢（默认不建议，因为会影响主路线）。
+- **字幕是厂商扩展，尽力而为**：DLNA 没有统一的字幕协议。中枢会扫描视频同目录及 `Subs/`、`subtitles/`、`sub/` 一级子目录中的字幕文件，按精确同名、语言后缀、格式顺序选出一条，再按电视品牌使用不同扩展写入 DIDL-Lite（见下方「字幕格式与厂商 profile」）。不同品牌、型号的识别率差异很大，不保证一定能显示。Sony 官方支持文档明确写「DLNA 服务器不支持 srt 字幕显示」，这类电视请改用主路线 CastHub App（字幕处理见「字幕」相关章节）。所有字幕会统一转成 UTF-8 srt，`Content-Type` 为 `application/x-subrip; charset=utf-8`；个别电视只认 `text/plain` 时，可把 `server/src/files.ts` 的 `MIME_TYPES` 中 `.srt` 值改成 `text/plain` 后重启中枢（默认不建议，因为会影响主路线）。
 - **音量控制**：支持 UPnP RenderingControl 的电视可在控制台调节 0-100 音量（发现后每 2 秒同步一次）；电视不支持或未提供 RenderingControl 时滑条禁用并提示，不影响播放控制。
 - **拖动精度受电视影响**：进度条 seek 会转成电视的 AVTransport Seek，实际落点和响应速度由电视实现决定。
 - **断点续播**：已支持；中枢在 Play 后等待 1 秒再发 Seek，实际落点与响应速度由电视实现决定。
 - **mkv / avi 可能不被电视接受**：部分电视 DLNA 渲染器只支持 mp4 等有限封装；这是已知边界，本项目不做转码补救。
 - **状态有最多数秒延迟**：中枢每 1s 轮询一次电视状态，界面显示可能比电视实际状态慢数秒。
+
+### 字幕格式与厂商 profile
+
+支持 `.srt`、`.vtt`、`.ass`、`.ssa`、`.smi`、`.sub`（文本 MicroDVD / SubViewer；二进制 VobSub 跳过）六种格式，扩展名大小写不敏感。扫描视频同目录与 `Subs/`、`subtitles/`、`sub/` 一级子目录；精确同名优先，其次支持 `zh`、`zh-CN`、`zh-Hans`、`zh-Hant`、`chs`、`cht`、`chi`、`en`、`eng`、`ja`、`jpn`、`ko`、`kor` 等语言后缀（可带 `forced` / `sdh` 等修饰词）。每次播放只选择并输出一条字幕。
+
+| Profile | 识别依据（manufacturer / model） | DIDL-Lite 输出 |
+|---|---|---|
+| Samsung | manufacturer 含 `samsung` | 仅一个 `<sec:CaptionInfoEx protocolInfo="http-get:*:application/x-srt:*" sec:type="srt">` |
+| Panasonic | manufacturer 含 `panasonic` / `matsushita` | 仅视频 `<res>` 增加 `pv:subtitleFileUri` 与 `pv:subtitleFileType="SRT"` |
+| LG | manufacturer 含 `lg` / `webos` | 仅一个 `protocolInfo="http-get:*:text/srt:*"` 的额外 `<res>` |
+| Generic | 其他厂商（含未知） | 同 LG：一个 `text/srt` 额外 `<res>` |
+| Sony | manufacturer 含 `sony` | 不输出任何字幕标记（仅日志提示不支持） |
+
+Samsung 场景还会在 `/media` 的 GET/HEAD 响应加 `CaptionInfo.sec: <完整URL>`；`subtitles=false` 时 DIDL 与响应头均不出现字幕。字幕 URL 指向 `/api/subtitle`，服务端在内部完成格式解码和 SRT 规范化。
 
 ### 设备如何出现
 
@@ -340,6 +354,7 @@ npm run typecheck    # 仅类型检查
 npm run e2e          # fake-tv + 中枢，完整 App 投屏流程
 node scripts/e2e-history.mjs # 播放历史 + 重启后续播流程
 node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
+node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subtitle + /media
 ```
 
 单独运行电视模拟器：
@@ -357,7 +372,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和三条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 20 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和四条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 

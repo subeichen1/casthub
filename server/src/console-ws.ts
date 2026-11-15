@@ -5,7 +5,8 @@ import type { FastifyInstance } from "fastify";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
-import { buildSubtitleUrl, findSubtitleForVideo, mimeTypeOf, resolveWithinReal } from "./files";
+import { buildSubtitleUrl, mimeTypeOf, resolveWithinReal } from "./files";
+import { findSubtitleCandidates, selectSubtitle } from "./subtitles";
 import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 import type { TvStatusPayload } from "./types";
@@ -281,10 +282,19 @@ export function attachConsoleWs(
             const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}${subtitleQuery}`;
             const title = path.basename(target);
             const mimeType = mimeTypeOf(target);
-            const subtitleTarget = subtitles ? await findSubtitleForVideo(target) : null;
-            const subtitleUrl = subtitleTarget
-              ? buildSubtitleUrl(options.publicBaseUrl, realRoot, subtitleTarget, options.mediaSigningKey)
-              : null;
+            let subtitleUrl: string | null = null;
+            if (subtitles) {
+              try {
+                const candidates = await findSubtitleCandidates(target);
+                const selected = selectSubtitle(candidates);
+                subtitleUrl = selected
+                  ? buildSubtitleUrl(options.publicBaseUrl, realRoot, selected.path, options.mediaSigningKey)
+                  : null;
+              } catch (error) {
+                // 字幕不可用不阻断视频投屏。
+                console.error(`[console] 字幕选择失败: ${(error as Error).message}`);
+              }
+            }
             const resume = msg.resume !== false;
             const resumePositionMs = resume ? validResumePosition(options.history.get(target)) : null;
             if (devices.has(deviceId)) {

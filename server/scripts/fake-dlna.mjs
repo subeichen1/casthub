@@ -8,6 +8,9 @@ const SSDP_ADDRESS = "239.255.255.250";
 const SSDP_PORT = Number(process.env.FAKE_DLNA_SSDP_PORT ?? 1900);
 const HTTP_PORT = Number(process.env.FAKE_DLNA_HTTP_PORT ?? 0);
 const NAME = process.env.FAKE_DLNA_NAME ?? "Fake DLNA TV";
+const MANUFACTURER = process.env.FAKE_DLNA_MANUFACTURER ?? "";
+const MODEL_NAME = process.env.FAKE_DLNA_MODEL_NAME ?? "";
+const MODEL_NUMBER = process.env.FAKE_DLNA_MODEL_NUMBER ?? "";
 const UDN = "uuid:" + randomUUID();
 const DURATION_MS = Number(process.env.FAKE_DLNA_DURATION_MS ?? 60000);
 const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
@@ -109,6 +112,9 @@ function deviceXml() {
     "<device>" +
     "<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>" +
     "<friendlyName>" + xmlEscape(NAME) + "</friendlyName>" +
+    "<manufacturer>" + xmlEscape(MANUFACTURER) + "</manufacturer>" +
+    "<modelName>" + xmlEscape(MODEL_NAME) + "</modelName>" +
+    "<modelNumber>" + xmlEscape(MODEL_NUMBER) + "</modelNumber>" +
     "<UDN>" + UDN + "</UDN>" +
     "<serviceList>" +
     "<service>" +
@@ -206,7 +212,8 @@ async function handleSoap(req, res) {
       console.log("DIDL_RECEIVED " + didl);
 
       // 模拟 Samsung 真机：先 HEAD（带 getCaptionInfo.sec: 1）探测 CaptionInfo.sec 响应头。
-      const headProbe = await fetch(uri, { method: "HEAD", headers: { "getCaptionInfo.sec": "1" } });
+      const headHeaders = MANUFACTURER.toLowerCase().includes("samsung") ? { "getCaptionInfo.sec": "1" } : {};
+      const headProbe = await fetch(uri, { method: "HEAD", headers: headHeaders });
       const headCaption = headProbe.headers.get("captioninfo.sec") || "";
       await headProbe.arrayBuffer();
       console.log("CAPTION_HEADER HEAD " + headProbe.status + " " + (headCaption || "-"));
@@ -218,17 +225,34 @@ async function handleSoap(req, res) {
       console.log("CAPTION_HEADER GET " + probe.status + " " + (getCaption || "-"));
 
       const subtitleUrls = [];
+      // Samsung：唯一的 sec:CaptionInfoEx 文本元素。
       const samsungRe = /<sec:CaptionInfoEx\b[^>]*>([\s\S]*?)<\/sec:CaptionInfoEx>/gi;
-      const sonyRe = /<pv:subtitleFileUri\b[^>]*>([\s\S]*?)<\/pv:subtitleFileUri>/gi;
-      for (const regex of [samsungRe, sonyRe]) {
-        for (;;) {
-          const match = regex.exec(didl);
-          if (!match) break;
-          subtitleUrls.push(xmlUnescape(match[1]).trim());
-        }
+      for (;;) {
+        const match = samsungRe.exec(didl);
+        if (!match) break;
+        subtitleUrls.push(xmlUnescape(match[1]).trim());
       }
-      if (headCaption && !subtitleUrls.includes(headCaption)) subtitleUrls.push(headCaption);
-      if (getCaption && !subtitleUrls.includes(getCaption)) subtitleUrls.push(getCaption);
+      // Panasonic：视频 <res> 上的 pv:subtitleFileUri 属性。
+      const panasonicRe = /<res\b[^>]*\bpv:subtitleFileUri="([^"]*)"/gi;
+      for (;;) {
+        const match = panasonicRe.exec(didl);
+        if (!match) break;
+        subtitleUrls.push(xmlUnescape(match[1]).trim());
+      }
+      // LG / Generic：protocolInfo 为 text/srt 的额外 <res>。
+      const textSrtRe = /<res\b[^>]*protocolInfo="http-get:\*:text\/srt:\*"[^>]*>([\s\S]*?)<\/res>/gi;
+      for (;;) {
+        const match = textSrtRe.exec(didl);
+        if (!match) break;
+        subtitleUrls.push(xmlUnescape(match[1]).trim());
+      }
+      const markerCount = subtitleUrls.length;
+      console.log("SUBTITLE_URL_COUNT " + markerCount);
+      // DIDL 已声明字幕时只按 DIDL 拉取；CaptionInfo.sec 仅作为无 DIDL 标记时的发现兜底，避免重复 GET。
+      if (subtitleUrls.length === 0) {
+        if (headCaption) subtitleUrls.push(headCaption);
+        if (getCaption) subtitleUrls.push(getCaption);
+      }
       let subtitleIndex = 0;
       for (const subtitleUrl of subtitleUrls) {
         try {

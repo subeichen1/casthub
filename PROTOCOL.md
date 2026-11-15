@@ -51,14 +51,15 @@
 - 投屏：`cast` 到 `dlna` 设备时，中枢调用 `SetAVTransportURI` → 500ms → `Play`；正在播放时先 `Stop`。若 `resume=true` 且存在有效历史位置，在 `Play` 后再等待 1s（500ms × 2）并发送 `Seek`。`control` 的 pause/resume/stop/seek 分别映射为 `Pause`/`Play`/`Stop`/`Seek`（Seek 的 Target 为 `H:MM:SS` 字符串）。
 - 状态：中枢每 1s 轮询 `GetTransportInfo` + `GetPositionInfo`，翻译成既有 `tvStatus` 消息。映射：`STOPPED`/`NO_MEDIA_PRESENT`→`idle`、`TRANSITIONING`→`buffering`、`PLAYING`→`playing`、`PAUSED_PLAYBACK`→`paused`。
 - 音量：从 `device.xml` 的 `RenderingControl:1` 服务解析独立 `controlURL`，发现设备后立即 `GetVolume` 一次，之后每 2s 轮询一次；`control` 的 `volume` 映射为 `SetVolume`（`Channel=Master`，`DesiredVolume` 为 0-100 整数）。`devices.list[].volume` 与 `tvStatus.volume` 为 `number | null`；`null` 表示该电视不支持 RenderingControl 或音量语义特殊。SetVolume 单次失败只回 `error`，不判设备离线。
-- 字幕：`cast` 的 `subtitles` 缺省为 true；当视频同目录存在同名 `.srt` 时，中枢在 DIDL-Lite 中追加 Samsung 属性式 `sec:CaptionInfoEx`（`sec:type="srt"`）与 Sony `pv:subtitleFileUri`，并在 `/media` 的 GET/HEAD 响应加 `CaptionInfo.sec: <完整URL>`。字幕 URL 指向 `/api/subtitle`，由 Phase 5 管线转成 UTF-8 srt 后以 `application/x-subrip; charset=utf-8` 下发。`subtitles=false` 时 DIDL 与响应头均不出现字幕。
+- 字幕：`cast` 的 `subtitles` 缺省为 true；中枢扫描视频同目录及 `Subs/`、`subtitles/`、`sub/` 一级子目录中的 `.srt`/`.vtt`/`.ass`/`.ssa`/`.smi`/`.sub`，按精确同名 > 同名子目录 > 语言偏好 > 格式顺序 > 路径字典序选出一条（单次播放最多输出一条）。DIDL-Lite 按设备的 `subtitleProfile` 输出：Samsung 仅一个 `sec:CaptionInfoEx`（`sec:type="srt"`）；Panasonic 仅在视频 `<res>` 上加 `pv:subtitleFileUri` 与 `pv:subtitleFileType="SRT"`；LG/Generic 仅一个 `protocolInfo="http-get:*:text/srt:*"` 的额外 `<res>`；Sony 不输出任何字幕标记。`/media` 的 GET/HEAD 仅在请求带 `getCaptionInfo.sec` 头（不限大小写）时返回 `CaptionInfo.sec: <完整URL>`，`subtitles=false` 时 DIDL 与响应头均不出现字幕。字幕 URL 指向 `/api/subtitle`，由服务端解码并统一转 UTF-8 srt 后以 `application/x-subrip; charset=utf-8` 下发。
+- 字幕扫描与 profile 判定：语言后缀 allowlist 包括 `zh`、`zh-CN`、`zh-Hans`、`zh-Hant`、`chs`、`cht`、`chi`、`en`、`eng`、`ja`、`jpn`、`ko`、`kor` 等，支持 `forced`/`sdh` 等修饰词；`subtitleProfile` 在 manufacturer 非空时按 manufacturer 匹配 `samsung` / `panasonic|matsushita` / `lg|webos` / `sony`，否则为 `generic`，manufacturer 为空时才依次回退 modelName、modelNumber、friendlyName（均 trim + 小写）。
 - 测试降级：环境变量 `DLNA_SEED`（逗号分隔的 `device.xml` URL）可跳过 SSDP 直接注入设备，用于 AP 隔离网络或沙箱多播不可达场景。
 
 ## REST
 
 `GET /api/files?path=&limit=&offset=` 需要 `x-casthub-token` 或 `?token=`，返回 `{entries: [{name, path, isDir, size, mimeType}], total, offset, limit, hasMore}`；`limit` 默认 200、最大 500。符号链接条目不会出现在列表中。
 
-`GET /api/subtitle?path=&expires=&sig=`（也支持 HEAD）使用与 `/media` 相同的 HMAC 签名或控制台令牌；读取 srt 后统一转 UTF-8，返回 `application/x-subrip; charset=utf-8`。
+`GET /api/subtitle?path=&expires=&sig=`（也支持 HEAD）使用与 `/media` 相同的 HMAC 签名或控制台令牌；支持 `.srt`、`.vtt`、`.ass`、`.ssa`、`.smi`、`.sub`（扩展名大小写不敏感），服务端解码后统一转 UTF-8 srt，返回 `application/x-subrip; charset=utf-8`，`Content-Length` 为转换后字节数。不支持的扩展名返回 415，无法解析返回 422 `{error}`。
 
 ## 流媒体
 

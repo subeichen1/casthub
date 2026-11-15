@@ -3,6 +3,7 @@ import { createSocket } from "node:dgram";
 import { promises as dns } from "node:dns";
 import * as net from "node:net";
 import * as os from "node:os";
+import * as path from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import type { DeviceView, TvState, TvStatusPayload } from "./types";
 
@@ -23,6 +24,8 @@ const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1";
 const MEDIA_RENDERER = "urn:schemas-upnp-org:device:MediaRenderer:1";
 
+export type SubtitleProfile = "samsung" | "panasonic" | "lg" | "generic" | "sony";
+
 export interface DlnaDeviceInfo {
   id: string;
   deviceName: string;
@@ -30,6 +33,37 @@ export interface DlnaDeviceInfo {
   controlURL: string;
   /** RenderingControl 服务的 controlURL；设备不提供该服务时为 null。 */
   renderingControlURL: string | null;
+  subtitleProfile: SubtitleProfile;
+}
+
+interface SubtitleProfileHints {
+  manufacturer: string;
+  modelName: string;
+  modelNumber: string;
+  friendlyName: string;
+}
+
+function normalizeProfileHint(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function profileFromText(value: string): SubtitleProfile | null {
+  if (value.includes("samsung")) return "samsung";
+  if (value.includes("panasonic") || value.includes("matsushita")) return "panasonic";
+  if (value.includes("lg") || value.includes("webos")) return "lg";
+  if (value.includes("sony")) return "sony";
+  return null;
+}
+
+/** 按厂商字段判断 DLNA 字幕投递 profile；manufacturer 为空时才回退到型号/名称。 */
+export function detectSubtitleProfile(hints: SubtitleProfileHints): SubtitleProfile {
+  const manufacturer = normalizeProfileHint(hints.manufacturer);
+  if (manufacturer) return profileFromText(manufacturer) ?? "generic";
+  for (const value of [hints.modelName, hints.modelNumber, hints.friendlyName]) {
+    const profile = profileFromText(normalizeProfileHint(value));
+    if (profile) return profile;
+  }
+  return "generic";
 }
 
 interface DlnaRuntime {
@@ -119,22 +153,73 @@ function parseSsdpResponse(text: string): SsdpResponse {
   };
 }
 
-function buildDidl(url: string, title: string, mimeType: string, subtitleUrl?: string | null): string {
-  const subtitleElements = subtitleUrl
-    ? '<sec:CaptionInfoEx protocolInfo="http-get:*:application/x-srt:*" sec:type="srt">' +
-      `${escapeXml(subtitleUrl)}</sec:CaptionInfoEx>` +
-      `<pv:subtitleFileUri>${escapeXml(subtitleUrl)}</pv:subtitleFileUri>`
-    : "";
+function extensionForMimeType(mimeType: string): string {
+  switch (mimeType.toLowerCase()) {
+    case "video/mp4":
+      return ".mp4";
+    case "video/x-matroska":
+      return ".mkv";
+    case "video/webm":
+      return ".webm";
+    case "video/x-msvideo":
+      return ".avi";
+    case "video/quicktime":
+      return ".mov";
+    default:
+      return ".mp4";
+  }
+}
+
+function titleWithExtension(title: string, mimeType: string): string {
+  return path.extname(title) ? title : title + extensionForMimeType(mimeType);
+}
+
+export function buildDidl(
+  url: string,
+  title: string,
+  mimeType: string,
+  subtitleUrl: string | null,
+  profile: SubtitleProfile
+): string {
+  const hasSubtitle = Boolean(subtitleUrl) && profile !== "sony";
+  if (subtitleUrl && profile === "sony") {
+    console.log("[dlna] Sony profile 不支持 DLNA 外挂字幕");
+  }
+  const namespaces =
+    (hasSubtitle && profile === "samsung" ? ' xmlns:sec="http://www.samsung.com/sec/"' : "") +
+    (hasSubtitle && profile === "panasonic" ? ' xmlns:pv="http://www.pv.com/pvns/"' : "");
+  let videoResAttributes = 'protocolInfo="http-get:*:' + escapeXml(mimeType) + ':*"';
+  if (hasSubtitle && profile === "panasonic" && subtitleUrl) {
+    videoResAttributes += ' pv:subtitleFileUri="' + escapeXml(subtitleUrl) + '" pv:subtitleFileType="SRT"';
+  }
+  let subtitleElements = "";
+  if (hasSubtitle && subtitleUrl) {
+    if (profile === "samsung") {
+      subtitleElements =
+        '<sec:CaptionInfoEx protocolInfo="http-get:*:application/x-srt:*" sec:type="srt">' +
+        escapeXml(subtitleUrl) +
+        "</sec:CaptionInfoEx>";
+    } else if (profile === "lg" || profile === "generic") {
+      subtitleElements = '<res protocolInfo="http-get:*:text/srt:*">' + escapeXml(subtitleUrl) + "</res>";
+    }
+  }
+  const displayTitle = profile === "lg" ? titleWithExtension(title, mimeType) : title;
   return (
     '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
     'xmlns:dc="http://purl.org/dc/elements/1.1/" ' +
     'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"' +
-    (subtitleUrl ? ' xmlns:sec="http://www.samsung.com/sec/" xmlns:pv="http://www.pv.com/pvns/"' : "") +
+    namespaces +
     ">" +
     '<item id="1" parentID="-1" restricted="1">' +
-    `<dc:title>${escapeXml(title)}</dc:title>` +
+    "<dc:title>" +
+    escapeXml(displayTitle) +
+    "</dc:title>" +
     "<upnp:class>object.item.videoItem</upnp:class>" +
-    `<res protocolInfo="http-get:*:${escapeXml(mimeType)}:*">${escapeXml(url)}</res>` +
+    "<res " +
+    videoResAttributes +
+    ">" +
+    escapeXml(url) +
+    "</res>" +
     subtitleElements +
     "</item></DIDL-Lite>"
   );
@@ -384,12 +469,17 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
       }
     }
   }
+  const deviceName = String(device.friendlyName ?? "DLNA 电视").trim().slice(0, 64) || "DLNA 电视";
+  const manufacturer = String(device.manufacturer ?? "").trim().slice(0, 256);
+  const modelName = String(device.modelName ?? "").trim().slice(0, 256);
+  const modelNumber = String(device.modelNumber ?? "").trim().slice(0, 256);
   return {
     id: udn,
-    deviceName: String(device.friendlyName ?? "DLNA 电视").trim().slice(0, 64) || "DLNA 电视",
+    deviceName,
     address: location,
     controlURL,
-    renderingControlURL
+    renderingControlURL,
+    subtitleProfile: detectSubtitleProfile({ manufacturer, modelName, modelNumber, friendlyName: deviceName })
   };
 }
 
@@ -533,7 +623,7 @@ export class DlnaService {
         // 有的电视没有当前媒体时会拒绝 Stop，继续 SetAVTransportURI。
       }
     }
-    const didl = buildDidl(url, title, mimeType, subtitleUrl);
+    const didl = buildDidl(url, title, mimeType, subtitleUrl ?? null, runtime.info.subtitleProfile);
     await this.soap(
       runtime,
       "SetAVTransportURI",
