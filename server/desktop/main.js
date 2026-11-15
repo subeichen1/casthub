@@ -111,7 +111,7 @@ async function boot() {
     createWindow();
     const consoleUrl = new URL(serverHandle.url || `http://127.0.0.1:${port}`);
     // 令牌放在 fragment，不会进入 HTTP 请求、服务端访问日志或代理日志。
-    consoleUrl.hash = "token=" + encodeURIComponent(serverHandle.consoleToken || "");
+    consoleUrl.hash = `token=${encodeURIComponent(serverHandle.consoleToken || "")}`;
     await mainWindow.loadURL(consoleUrl.toString());
   } catch (error) {
     const message =

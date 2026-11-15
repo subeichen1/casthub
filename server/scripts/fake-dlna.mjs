@@ -221,8 +221,11 @@ async function handleSoap(req, res) {
       const samsungRe = /<sec:CaptionInfoEx\b[^>]*>([\s\S]*?)<\/sec:CaptionInfoEx>/gi;
       const sonyRe = /<pv:subtitleFileUri\b[^>]*>([\s\S]*?)<\/pv:subtitleFileUri>/gi;
       for (const regex of [samsungRe, sonyRe]) {
-        let match;
-        while ((match = regex.exec(didl)) !== null) subtitleUrls.push(xmlUnescape(match[1]).trim());
+        for (;;) {
+          const match = regex.exec(didl);
+          if (!match) break;
+          subtitleUrls.push(xmlUnescape(match[1]).trim());
+        }
       }
       if (headCaption && !subtitleUrls.includes(headCaption)) subtitleUrls.push(headCaption);
       if (getCaption && !subtitleUrls.includes(getCaption)) subtitleUrls.push(getCaption);
