@@ -5,7 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
-import { mimeTypeOf, resolveWithinReal } from "./files";
+import { buildSubtitleUrl, findSubtitleForVideo, mimeTypeOf, resolveWithinReal } from "./files";
 import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 import type { TvStatusPayload } from "./types";
@@ -275,9 +275,16 @@ export function attachConsoleWs(
             const expires = Date.now() + MEDIA_URL_TTL_MS;
             const signature = signMediaPath(options.mediaSigningKey, actualRelPath, expires);
             const encodedPath = actualRelPath.split("/").map((part) => encodeURIComponent(part)).join("/");
-            const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}`;
+            const subtitles = msg.subtitles !== false;
+            // subtitles=false 时把标记带到 /media，让 GET/HEAD 也不返回 CaptionInfo.sec。
+            const subtitleQuery = subtitles ? "" : "&subtitles=0";
+            const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}${subtitleQuery}`;
             const title = path.basename(target);
             const mimeType = mimeTypeOf(target);
+            const subtitleTarget = subtitles ? await findSubtitleForVideo(target) : null;
+            const subtitleUrl = subtitleTarget
+              ? buildSubtitleUrl(options.publicBaseUrl, realRoot, subtitleTarget, options.mediaSigningKey)
+              : null;
             const resume = msg.resume !== false;
             const resumePositionMs = resume ? validResumePosition(options.history.get(target)) : null;
             if (devices.has(deviceId)) {
@@ -297,7 +304,7 @@ export function attachConsoleWs(
             } else if (dlna.has(deviceId)) {
               options.history.startPlayback(deviceId, { path: target, name: title });
               try {
-                await dlna.play(deviceId, url, title, mimeType, resumePositionMs);
+                await dlna.play(deviceId, url, title, mimeType, resumePositionMs, subtitleUrl);
               } catch (error) {
                 options.history.stopPlayback(deviceId);
                 throw error;

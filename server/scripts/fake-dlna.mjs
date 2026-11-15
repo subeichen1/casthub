@@ -202,9 +202,46 @@ async function handleSoap(req, res) {
     if (action === "SetAVTransportURI") {
       const uri = tagValue(body, "CurrentURI");
       if (!uri) throw new Error("CurrentURI 为空");
+      const didl = tagValue(body, "CurrentURIMetaData");
+      console.log("DIDL_RECEIVED " + didl);
+
+      // 模拟 Samsung 真机：先 HEAD（带 getCaptionInfo.sec: 1）探测 CaptionInfo.sec 响应头。
+      const headProbe = await fetch(uri, { method: "HEAD", headers: { "getCaptionInfo.sec": "1" } });
+      const headCaption = headProbe.headers.get("captioninfo.sec") || "";
+      await headProbe.arrayBuffer();
+      console.log("CAPTION_HEADER HEAD " + headProbe.status + " " + (headCaption || "-"));
+
       const probe = await fetch(uri, { headers: { Range: "bytes=0-1023" } });
       await probe.arrayBuffer();
       if (probe.status !== 206) throw new Error("媒体地址不支持 Range: HTTP " + probe.status);
+      const getCaption = probe.headers.get("captioninfo.sec") || "";
+      console.log("CAPTION_HEADER GET " + probe.status + " " + (getCaption || "-"));
+
+      const subtitleUrls = [];
+      const samsungRe = /<sec:CaptionInfoEx\b[^>]*>([\s\S]*?)<\/sec:CaptionInfoEx>/gi;
+      const sonyRe = /<pv:subtitleFileUri\b[^>]*>([\s\S]*?)<\/pv:subtitleFileUri>/gi;
+      for (const regex of [samsungRe, sonyRe]) {
+        let match;
+        while ((match = regex.exec(didl)) !== null) subtitleUrls.push(xmlUnescape(match[1]).trim());
+      }
+      if (headCaption && !subtitleUrls.includes(headCaption)) subtitleUrls.push(headCaption);
+      if (getCaption && !subtitleUrls.includes(getCaption)) subtitleUrls.push(getCaption);
+      let subtitleIndex = 0;
+      for (const subtitleUrl of subtitleUrls) {
+        try {
+          const subtitleRes = await fetch(subtitleUrl);
+          const subtitleBody = Buffer.from(await subtitleRes.arrayBuffer());
+          console.log(
+            "SUBTITLE_GET [" + subtitleIndex + "] " + subtitleRes.status + " " +
+            (subtitleRes.headers.get("content-type") || "") + " " + subtitleBody.length + " " + subtitleUrl
+          );
+          console.log("SUBTITLE_TEXT [" + subtitleIndex + "] " + JSON.stringify(subtitleBody.toString("utf8").slice(0, 500)));
+        } catch (error) {
+          console.log("SUBTITLE_GET [" + subtitleIndex + "] ERROR " + error.message + " " + subtitleUrl);
+        }
+        subtitleIndex += 1;
+      }
+
       settlePosition();
       currentUri = uri;
       positionMs = 0;

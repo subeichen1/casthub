@@ -190,7 +190,7 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const publicHost = host === "0.0.0.0" || host === "::" ? lanIp ?? "127.0.0.1" : host;
   const publicBaseUrl = (explicitPublicBaseUrl || `http://${formatHostForUrl(publicHost)}:${port}`).replace(/\/+$/, "");
 
-  await registerFileRoutes(app, resolved.mediaDir, { consoleToken, mediaSigningKey });
+  await registerFileRoutes(app, resolved.mediaDir, { consoleToken, mediaSigningKey, publicBaseUrl });
   const consoleWs = attachConsoleWs(app, devices, resolved.mediaDir, dlna, {
     consoleToken,
     publicBaseUrl,

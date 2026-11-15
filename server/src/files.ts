@@ -3,8 +3,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { TextDecoder } from "node:util";
 import type { MediaFileEntry } from "./types";
-import { safeTokenEquals, verifyMediaPath } from "./security";
+import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath, verifyMediaPath } from "./security";
 
 const MIME_TYPES: Record<string, string> = {
   ".mp4": "video/mp4",
@@ -31,7 +32,10 @@ const MIME_TYPES: Record<string, string> = {
 export interface FileRouteOptions {
   consoleToken: string;
   mediaSigningKey: Buffer;
+  publicBaseUrl: string;
 }
+
+const MAX_SUBTITLE_BYTES = 5 * 1024 * 1024;
 
 export function mimeTypeOf(fileName: string): string {
   return MIME_TYPES[path.extname(fileName).toLowerCase()] ?? "application/octet-stream";
@@ -49,6 +53,52 @@ export function resolveWithin(root: string, relative: string): string | null {
   if (rel === "") return resolved;
   if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
   return resolved;
+}
+
+/** 查找视频同目录、同文件名的 .srt 字幕；不存在或不是普通文件时返回 null。 */
+export async function findSubtitleForVideo(videoPath: string): Promise<string | null> {
+  const srtPath = path.join(path.dirname(videoPath), path.basename(videoPath, path.extname(videoPath)) + ".srt");
+  try {
+    const stat = await fsp.stat(srtPath);
+    return stat.isFile() ? srtPath : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 生成带签名、可被 DLNA 电视直接 GET 的 /api/subtitle URL。 */
+export function buildSubtitleUrl(
+  publicBaseUrl: string,
+  mediaRoot: string,
+  subtitlePath: string,
+  signingKey: Buffer
+): string {
+  const rel = path.relative(mediaRoot, subtitlePath).split(path.sep).join("/");
+  const expires = Date.now() + MEDIA_URL_TTL_MS;
+  const signature = signMediaPath(signingKey, rel, expires);
+  return `${publicBaseUrl}/api/subtitle?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}`;
+}
+
+/** 字幕统一转 UTF-8：优先识别 BOM/严格 UTF-8，失败再按 GB18030（覆盖 GBK/GB2312）解码。 */
+function decodeSubtitleBuffer(buffer: Buffer): string {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return buffer.subarray(3).toString("utf8");
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(buffer.subarray(2));
+  }
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(buffer.subarray(2));
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+  } catch {
+    try {
+      return new TextDecoder("gb18030").decode(buffer);
+    } catch {
+      return buffer.toString("utf8");
+    }
+  }
 }
 
 /** 在 resolveWithin 的基础上做 realpath 校验，阻止通过符号链接逃逸 mediaRoot。 */
@@ -157,6 +207,42 @@ export async function registerFileRoutes(
 
   app.route({
     method: ["GET", "HEAD"],
+    url: "/api/subtitle",
+    handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as { path?: string };
+      const rel = typeof query.path === "string" ? query.path : "";
+      if (!rel || !mediaAuthorized(request, rel, options)) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const target = await resolveWithinReal(mediaRoot, rel);
+      if (!target) return reply.code(404).send({ error: "not found" });
+      let stat: fs.Stats;
+      try {
+        stat = await fsp.stat(target);
+      } catch {
+        return reply.code(404).send({ error: "not found" });
+      }
+      if (!stat.isFile()) return reply.code(404).send({ error: "not found" });
+      if (stat.size > MAX_SUBTITLE_BYTES) return reply.code(413).send({ error: "subtitle too large" });
+      let raw: Buffer;
+      try {
+        raw = await fsp.readFile(target);
+      } catch {
+        return reply.code(404).send({ error: "not found" });
+      }
+      const utf8 = Buffer.from(decodeSubtitleBuffer(raw), "utf8");
+      reply
+        .header("Content-Type", `${mimeTypeOf("subtitle.srt")}; charset=utf-8`)
+        .header("Content-Length", utf8.length)
+        .header("Cache-Control", "no-store")
+        .code(200);
+      if (request.method === "HEAD") return reply.send();
+      return reply.send(utf8);
+    }
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
     url: "/media/*",
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
       let rel: string;
@@ -234,6 +320,19 @@ export async function registerFileRoutes(
 
         reply.header("Accept-Ranges", "bytes");
         reply.header("Content-Type", mimeTypeOf(rel));
+        // 同目录存在同名 .srt 时加 CaptionInfo.sec（GET/HEAD 都生效），对普通客户端无害；
+        // cast(subtitles=false) 生成的媒体 URL 带 subtitles=0，此时不返回字幕头。
+        const subtitleDisabled = (request.query as { subtitles?: string }).subtitles === "0";
+        if (!subtitleDisabled) {
+          const subtitleVideoTarget = await resolveWithinReal(mediaRoot, rel);
+          const subtitleTarget = subtitleVideoTarget ? await findSubtitleForVideo(subtitleVideoTarget) : null;
+          if (subtitleTarget) {
+            reply.header(
+              "CaptionInfo.sec",
+              buildSubtitleUrl(options.publicBaseUrl, rootReal, subtitleTarget, options.mediaSigningKey)
+            );
+          }
+        }
         if (statusCode === 206) {
           reply.header("Content-Range", `bytes ${start}-${end}/${size}`);
         }

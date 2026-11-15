@@ -119,15 +119,23 @@ function parseSsdpResponse(text: string): SsdpResponse {
   };
 }
 
-function buildDidl(url: string, title: string, mimeType: string): string {
+function buildDidl(url: string, title: string, mimeType: string, subtitleUrl?: string | null): string {
+  const subtitleElements = subtitleUrl
+    ? '<sec:CaptionInfoEx protocolInfo="http-get:*:application/x-srt:*" sec:type="srt">' +
+      `${escapeXml(subtitleUrl)}</sec:CaptionInfoEx>` +
+      `<pv:subtitleFileUri>${escapeXml(subtitleUrl)}</pv:subtitleFileUri>`
+    : "";
   return (
     '<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ' +
     'xmlns:dc="http://purl.org/dc/elements/1.1/" ' +
-    'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">' +
+    'xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"' +
+    (subtitleUrl ? ' xmlns:sec="http://www.samsung.com/sec/" xmlns:pv="http://www.pv.com/pvns/"' : "") +
+    ">" +
     '<item id="1" parentID="-1" restricted="1">' +
     `<dc:title>${escapeXml(title)}</dc:title>` +
     "<upnp:class>object.item.videoItem</upnp:class>" +
     `<res protocolInfo="http-get:*:${escapeXml(mimeType)}:*">${escapeXml(url)}</res>` +
+    subtitleElements +
     "</item></DIDL-Lite>"
   );
 }
@@ -502,7 +510,14 @@ export class DlnaService {
     }
   }
 
-  async play(id: string, url: string, title: string, mimeType: string, resumePositionMs?: number | null): Promise<void> {
+  async play(
+    id: string,
+    url: string,
+    title: string,
+    mimeType: string,
+    resumePositionMs?: number | null,
+    subtitleUrl?: string | null
+  ): Promise<void> {
     if (this.disposed) throw new Error("DLNA 服务已关闭");
     const runtime = this.devices.get(id);
     if (!runtime) throw new Error("DLNA 设备不存在");
@@ -518,7 +533,7 @@ export class DlnaService {
         // 有的电视没有当前媒体时会拒绝 Stop，继续 SetAVTransportURI。
       }
     }
-    const didl = buildDidl(url, title, mimeType);
+    const didl = buildDidl(url, title, mimeType, subtitleUrl);
     await this.soap(
       runtime,
       "SetAVTransportURI",

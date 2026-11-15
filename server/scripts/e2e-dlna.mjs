@@ -211,6 +211,11 @@ async function main() {
   const dataDir = path.join(tempDir, "data-root");
   fs.mkdirSync(mediaDir, { recursive: true });
   fs.writeFileSync(path.join(mediaDir, "sample.mp4"), Buffer.alloc(256 * 1024, 0x1a));
+  fs.writeFileSync(
+    path.join(mediaDir, "sample.srt"),
+    "1\n00:00:01,000 --> 00:00:03,000\n测试字幕第一行\n\n2\n00:00:04,000 --> 00:00:06,000\n测试字幕第二行\n",
+    "utf8"
+  );
   console.log("测试媒体目录:", mediaDir);
   console.log("测试 DATA_DIR:", dataDir, "（两代 hub 共用）");
 
@@ -265,6 +270,30 @@ async function main() {
   assert(playing.durationMs > 0, `DLNA 进入 playing（duration=${playing.durationMs}ms）`);
   await fake.waitFor(/MEDIA_PROBE 206/, 5000, "fake-dlna Range 探测 206");
 
+  console.log("[5.0/12] 验证 DLNA 字幕 DIDL 与 CaptionInfo.sec ...");
+  const didlLine = await fake.waitFor(/^DIDL_RECEIVED /, 5000, "fake-dlna 收到 DIDL");
+  const didl = didlLine.replace(/^DIDL_RECEIVED /, "");
+  assert(didl.includes('xmlns:sec="http://www.samsung.com/sec/"'), "DIDL 声明 Samsung sec 命名空间");
+  assert(didl.includes('xmlns:pv="http://www.pv.com/pvns/"'), "DIDL 声明 Sony pv 命名空间");
+  assert(
+    didl.includes('<sec:CaptionInfoEx protocolInfo="http-get:*:application/x-srt:*" sec:type="srt">'),
+    "DIDL 含属性式 sec:CaptionInfoEx（sec:type=\"srt\"）"
+  );
+  assert(didl.includes("<pv:subtitleFileUri>"), "DIDL 含 pv:subtitleFileUri");
+  const captionHeadLine = await fake.waitFor(
+    /^CAPTION_HEADER HEAD 200 http:\/\/.+\/api\/subtitle\?/,
+    5000,
+    "HEAD 响应含 CaptionInfo.sec"
+  );
+  const captionHeaderUrl = captionHeadLine.split(" ")[3];
+  assert(captionHeaderUrl.includes("/api/subtitle?path=sample.srt"), `HEAD CaptionInfo.sec 指向字幕 URL: ${captionHeaderUrl}`);
+  const subtitleGet0 = await fake.waitFor(/^SUBTITLE_GET \[0\] 200 /, 5000, "字幕 URL[0] GET 200");
+  const subtitleGet1 = await fake.waitFor(/^SUBTITLE_GET \[1\] 200 /, 5000, "字幕 URL[1] GET 200");
+  assert(subtitleGet0.includes("application/x-subrip"), "字幕[0] Content-Type 为 application/x-subrip");
+  assert(subtitleGet1.includes("application/x-subrip"), "字幕[1] Content-Type 为 application/x-subrip");
+  const subtitleText = await fake.waitFor(/^SUBTITLE_TEXT \[0\] /, 5000, "字幕内容为 UTF-8 文本");
+  assert(subtitleText.includes("00:00:01,000") && subtitleText.includes("测试字幕第一行"), "字幕内容按 UTF-8 下发");
+
   console.log("[5.1/12] 验证 RenderingControl 初始音量与 SetVolume ...");
   const volumeReady = await client.waitFor(
     (m) => m.type === "devices" && m.list.some((d) => d.id === device.id && d.volume === 50),
@@ -287,6 +316,23 @@ async function main() {
     "tvStatus.volume=100"
   );
   assert(volume100.volume === 100, `SetVolume 100 生效 volume=${volume100.volume}`);
+
+  console.log("[5.2/12] 验证 subtitles=false 不推送字幕 ...");
+  fake.lines.length = 0;
+  client.messages.length = 0;
+  client.send({ type: "cast", deviceId: device.id, path: video.path, subtitles: false });
+  await client.waitFor(
+    (m) => m.type === "tvStatus" && m.deviceId === device.id && m.state === "playing",
+    15000,
+    "subtitles=false 重新起播"
+  );
+  const noSubDidlLine = await fake.waitFor(/^DIDL_RECEIVED /, 5000, "subtitles=false DIDL");
+  const noSubDidl = noSubDidlLine.replace(/^DIDL_RECEIVED /, "");
+  assert(!noSubDidl.includes("CaptionInfoEx"), "subtitles=false 时 DIDL 不含 CaptionInfoEx");
+  assert(!noSubDidl.includes("subtitleFileUri"), "subtitles=false 时 DIDL 不含 subtitleFileUri");
+  const noSubHead = await fake.waitFor(/^CAPTION_HEADER HEAD /, 5000, "subtitles=false HEAD 响应");
+  assert(noSubHead.endsWith(" -"), "subtitles=false 时 HEAD 响应无 CaptionInfo.sec 头");
+  assert(!fake.lines.some((line) => line.startsWith("SUBTITLE_GET")), "subtitles=false 时未请求字幕 URL");
 
   console.log("[6/12] pause ...");
   client.send({ type: "control", deviceId: device.id, action: "pause" });
