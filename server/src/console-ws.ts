@@ -6,7 +6,9 @@ import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
 import { mimeTypeOf, resolveWithinReal } from "./files";
+import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
+import type { TvStatusPayload } from "./types";
 
 type ConsolePayload = Record<string, unknown>;
 
@@ -24,6 +26,7 @@ export interface ConsoleWsOptions {
   consoleToken: string;
   publicBaseUrl: string;
   mediaSigningKey: Buffer;
+  history: HistoryRecorder;
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -86,13 +89,33 @@ export function attachConsoleWs(
 
   const allDevices = () => [...devices.list(), ...dlna.list()];
   const broadcastDevices = (): void => broadcast({ type: "devices", list: allDevices() });
+  const broadcastHistory = (): void => broadcast({ type: "history", list: options.history.list(200) });
+  const pendingSeeks = new Map<string, number>();
+
+  const handleTvStatus = (deviceId: string, status: TvStatusPayload): void => {
+    const update = options.history.record(deviceId, status);
+    if (update) broadcastHistory();
+    broadcast({ type: "tvStatus", deviceId, ...status });
+    if (status.state === "playing") {
+      const seekPositionMs = pendingSeeks.get(deviceId);
+      if (seekPositionMs !== undefined) {
+        pendingSeeks.delete(deviceId);
+        devices.control(deviceId, "seek", seekPositionMs);
+      }
+    }
+  };
+
+  const handleDeviceError = (deviceId: string, message: string): void => {
+    if (options.history.clearForDevice(deviceId)) broadcastHistory();
+    broadcast({ type: "error", message });
+  };
 
   devices.onDevicesChanged = broadcastDevices;
-  devices.onTvStatus = (deviceId, status) => broadcast({ type: "tvStatus", deviceId, ...status });
-  devices.onDeviceError = (_deviceId, message) => broadcast({ type: "error", message });
+  devices.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
+  devices.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
   dlna.onDevicesChanged = broadcastDevices;
-  dlna.onTvStatus = (deviceId, status) => broadcast({ type: "tvStatus", deviceId, ...status });
-  dlna.onDeviceError = (_deviceId, message) => broadcast({ type: "error", message });
+  dlna.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
+  dlna.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
 
   wss.on("connection", (ws, req) => {
     if (wss.clients.size > MAX_CONNECTIONS) {
@@ -145,6 +168,7 @@ export function attachConsoleWs(
     ws.on("close", () => clearInterval(heartbeat));
 
     sendJson(ws, { type: "devices", list: allDevices() });
+    sendJson(ws, { type: "history", list: options.history.list(200) });
 
     ws.on("message", async (data) => {
       if (rawDataLength(data) > MAX_MESSAGE_BYTES) {
@@ -207,6 +231,26 @@ export function attachConsoleWs(
             broadcastDevices();
             break;
           }
+          case "getHistory": {
+            sendJson(ws, { type: "history", list: options.history.list(200) });
+            break;
+          }
+          case "deleteHistory": {
+            const filePath = String(msg.path ?? "");
+            if (!filePath) {
+              sendJson(ws, { type: "error", message: "缺少历史路径" });
+              break;
+            }
+            options.history.remove(filePath);
+            broadcastHistory();
+            break;
+          }
+          case "clearHistory": {
+            const removed = options.history.clear();
+            broadcastHistory();
+            console.log(`[console] 清空播放历史 ${removed} 条`);
+            break;
+          }
           case "cast": {
             const deviceId = String(msg.deviceId ?? "");
             const relPath = String(msg.path ?? "");
@@ -234,19 +278,37 @@ export function attachConsoleWs(
             const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}`;
             const title = path.basename(target);
             const mimeType = mimeTypeOf(target);
+            const resume = msg.resume !== false;
+            const resumePositionMs = resume ? validResumePosition(options.history.get(target)) : null;
             if (devices.has(deviceId)) {
+              options.history.startPlayback(deviceId, { path: target, name: title });
               const ok = devices.sendPlay(deviceId, url, title, mimeType);
               if (!ok) {
+                options.history.stopPlayback(deviceId);
                 sendJson(ws, { type: "error", message: "设备不在线，无法投屏" });
                 return;
               }
+              if (resumePositionMs !== null) {
+                // casthub 设备沿用既有 seek：等设备上报 playing 后立刻定位。
+                pendingSeeks.set(deviceId, resumePositionMs);
+              } else {
+                pendingSeeks.delete(deviceId);
+              }
             } else if (dlna.has(deviceId)) {
-              await dlna.play(deviceId, url, title, mimeType);
+              options.history.startPlayback(deviceId, { path: target, name: title });
+              try {
+                await dlna.play(deviceId, url, title, mimeType, resumePositionMs);
+              } catch (error) {
+                options.history.stopPlayback(deviceId);
+                throw error;
+              }
             } else {
               sendJson(ws, { type: "error", message: "设备不存在" });
               return;
             }
-            console.log(`[console] 投屏 ${actualRelPath} -> ${deviceId}`);
+            console.log(
+              `[console] 投屏 ${actualRelPath} -> ${deviceId}${resumePositionMs !== null ? `（续播 ${resumePositionMs}ms）` : ""}`
+            );
             break;
           }
           case "control": {

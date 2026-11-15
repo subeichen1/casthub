@@ -41,3 +41,13 @@
 - Release workflow：run id `43617653552`，tag `v0.1.1`，结论 `success`；windows / android / source / publish 四个 job 全部通过，Windows Authenticode 与 Android APK 签名校验步骤均为 `success`。
 - Release：id `445444484`，<https://github.com/subeichen1/casthub/releases/tag/v0.1.1>；资产 `CastHub.exe`（111,611,752 字节）、`CastHub-TV.apk`（1,824,058 字节）、`casthub-src.tar.gz`（1,721,187 字节）、`checksums.txt`（244 字节）。
 - 说明：本次使用开发自签名证书，Windows 可能显示“未知发布者”，生产分发需替换正式证书；未手工上传本地 unsigned 构建产物。
+
+## Phase 9A — better-sqlite3 原生模块（当前环境降级 JSON，待人工在有构建工具机器验证 SQLite）
+
+- 真实执行 `npm.cmd install better-sqlite3@^11 --save`（server 目录）退出码 1；关键输出：
+  - `prebuild-install warn install read ECONNRESET`
+  - `gyp ERR! find VS ... You need to install the latest version of Visual Studio including the Desktop development with C++ workload`
+  - `npm error not ok`
+- 因此本机运行 `createHistoryStore` 时先打印 `[history] better-sqlite3 不可用: Cannot find module 'better-sqlite3'` 和 `[history] SQLite 初始化失败，降级 JSON: better-sqlite3 模块未安装或加载失败`，实际使用 `data/casthub-history.json`；Phase 9A/9B/9C 全部门禁均在 JSON 模式真实通过。
+- `server/package.json` 已把 `better-sqlite3@^11.10.0` 放入 `optionalDependencies`，安装失败不会阻塞 `npm install`；在具备 Visual Studio C++ Build Tools（或支持预编译产物）的机器上安装后会自然回到 SQLite，无需改代码。
+- 待人工：在具备 C++ 构建工具/Node 20-22 的机器上安装 better-sqlite3，重复运行 `server/scripts/phase9a-gate.ts` 验证 `STORE_KIND=sqlite` 与垃圾 `.db` 重建日志。

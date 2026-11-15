@@ -41,7 +41,10 @@ export function mimeTypeOf(fileName: string): string {
 export function resolveWithin(root: string, relative: string): string | null {
   const normalized = relative.replace(/\\/g, "/");
   if (normalized.includes("\0")) return null;
-  const resolved = path.resolve(root, "." + (normalized.startsWith("/") ? normalized : "/" + normalized));
+  // 控制台历史记录携带绝对路径；允许绝对路径但必须仍在 mediaRoot 内。
+  const resolved = path.isAbsolute(relative)
+    ? path.resolve(relative)
+    : path.resolve(root, "." + (normalized.startsWith("/") ? normalized : "/" + normalized));
   const rel = path.relative(root, resolved);
   if (rel === "") return resolved;
   if (rel.startsWith("..") || path.isAbsolute(rel)) return null;

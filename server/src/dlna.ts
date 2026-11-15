@@ -478,7 +478,7 @@ export class DlnaService {
     }
   }
 
-  async play(id: string, url: string, title: string, mimeType: string): Promise<void> {
+  async play(id: string, url: string, title: string, mimeType: string, resumePositionMs?: number | null): Promise<void> {
     if (this.disposed) throw new Error("DLNA 服务已关闭");
     const runtime = this.devices.get(id);
     if (!runtime) throw new Error("DLNA 设备不存在");
@@ -511,6 +511,17 @@ export class DlnaService {
     this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     this.startPolling(runtime);
     this.emitDevices();
+    if (typeof resumePositionMs === "number" && Number.isFinite(resumePositionMs) && resumePositionMs > 0) {
+      // DLNA 电视在 Play 后需要稳定时间才能接受 Seek：共等 1s（500ms × 2）。
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      try {
+        await this.control(runtime.info.id, "seek", resumePositionMs);
+      } catch (error) {
+        this.onDeviceError?.(runtime.info.id, `SEEK_FAILED: ${(error as Error).message}`);
+        throw error;
+      }
+    }
   }
 
   async control(id: string, action: "pause" | "resume" | "stop" | "seek", positionMs?: number): Promise<boolean> {

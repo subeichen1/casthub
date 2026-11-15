@@ -146,6 +146,29 @@ function assert(condition, message) {
   console.log("✓ " + message);
 }
 
+async function stopHub(handle) {
+  const child = handle.child;
+  if (child.exitCode !== null) return child.exitCode;
+  const exitPromise = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // ignore
+      }
+      reject(new Error("等待 hub 进程退出超时"));
+    }, 15000);
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+  });
+  child.kill("SIGTERM");
+  const result = await exitPromise;
+  console.log("hub 进程已真正退出:", JSON.stringify(result));
+  return result.code;
+}
+
 function startHub(mediaDir, extraEnv = {}) {
   return startProcess("server", ["--import", "tsx", "src/index.ts"], {
     cwd: SERVER_DIR,
@@ -179,11 +202,13 @@ async function waitDlnaDevice(client, timeoutMs) {
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-e2e-dlna-"));
   const mediaDir = path.join(tempDir, "media");
+  const dataDir = path.join(tempDir, "data-root");
   fs.mkdirSync(mediaDir, { recursive: true });
   fs.writeFileSync(path.join(mediaDir, "sample.mp4"), Buffer.alloc(256 * 1024, 0x1a));
   console.log("测试媒体目录:", mediaDir);
+  console.log("测试 DATA_DIR:", dataDir, "（两代 hub 共用）");
 
-  console.log("\n[1/9] 启动 fake-dlna ...");
+  console.log("\n[1/12] 启动 fake-dlna ...");
   const fake = startProcess("fake-dlna", ["scripts/fake-dlna.mjs"], {
     cwd: SERVER_DIR,
     env: { ...process.env, FAKE_DLNA_HTTP_PORT: "0", FAKE_DLNA_NAME: "Fake DLNA TV" }
@@ -193,12 +218,12 @@ async function main() {
   await fake.waitFor(/FAKE_DLNA_READY/, 5000, "fake-dlna ready");
   console.log("fake-dlna LOCATION:", location);
 
-  console.log("[2/9] 启动中枢 ...");
-  let server = startHub(mediaDir);
+  console.log("[2/12] 启动中枢 ...");
+  let server = startHub(mediaDir, { DATA_DIR: dataDir });
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
-  console.log("[3/9] 连接控制台并等待 DLNA 自动发现 ...");
+  console.log("[3/12] 连接控制台并等待 DLNA 自动发现 ...");
   let client = await connectConsole();
   let dlnaMsg;
   try {
@@ -206,9 +231,8 @@ async function main() {
   } catch (error) {
     console.log("⚠ 8s 内未自动发现 DLNA（多播可能受限），降级为 DLNA_SEED 重启中枢");
     client.close();
-    server.child.kill();
-    await sleep(800);
-    server = startHub(mediaDir, { DLNA_SEED: location });
+    await stopHub(server);
+    server = startHub(mediaDir, { DLNA_SEED: location, DATA_DIR: dataDir });
     await server.waitFor(/CastHub 已启动/, 20000, "seed 中枢启动");
     await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
     client = await connectConsole();
@@ -219,13 +243,13 @@ async function main() {
   assert(!!device, `DLNA 设备出现: ${device.deviceName} (${device.id})`);
   assert(device.deviceName === "Fake DLNA TV", "deviceName 来自 device.xml friendlyName");
 
-  console.log("[4/9] 浏览文件 ...");
+  console.log("[4/12] 浏览文件 ...");
   const fileRes = await fetch(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`, { headers: { "x-casthub-token": CONSOLE_TOKEN } });
   const fileJson = await fileRes.json();
   const video = fileJson.entries.find((entry) => !entry.isDir && /\.(mp4|mkv|avi|mov|webm|ts)$/i.test(entry.name));
   assert(!!video, `/api/files 返回视频: ${video.name} (${video.size} bytes, ${video.mimeType})`);
 
-  console.log("[5/9] cast 到 DLNA 设备 ...");
+  console.log("[5/12] cast 到 DLNA 设备 ...");
   client.send({ type: "cast", deviceId: device.id, path: video.path });
   const playing = await client.waitFor(
     (m) => m.type === "tvStatus" && m.deviceId === device.id && m.state === "playing",
@@ -235,7 +259,7 @@ async function main() {
   assert(playing.durationMs > 0, `DLNA 进入 playing（duration=${playing.durationMs}ms）`);
   await fake.waitFor(/MEDIA_PROBE 206/, 5000, "fake-dlna Range 探测 206");
 
-  console.log("[6/9] pause ...");
+  console.log("[6/12] pause ...");
   client.send({ type: "control", deviceId: device.id, action: "pause" });
   const paused = await client.waitFor(
     (m) => m.type === "tvStatus" && m.deviceId === device.id && m.state === "paused",
@@ -244,7 +268,7 @@ async function main() {
   );
   assert(paused.state === "paused", "pause 生效，tvStatus=paused");
 
-  console.log("[7/9] seek 30000 ...");
+  console.log("[7/12] seek 30000 ...");
   client.send({ type: "control", deviceId: device.id, action: "seek", positionMs: 30000 });
   const seeked = await client.waitFor(
     (m) => m.type === "tvStatus" && m.deviceId === device.id && m.positionMs >= 29000 && m.positionMs <= 35000,
@@ -253,7 +277,7 @@ async function main() {
   );
   assert(true, `seek 生效 positionMs=${seeked.positionMs}`);
 
-  console.log("[8/9] stop ...");
+  console.log("[8/12] stop ...");
   client.send({ type: "control", deviceId: device.id, action: "stop" });
   const stopped = await client.waitFor(
     (m) => m.type === "tvStatus" && m.deviceId === device.id && m.state === "idle",
@@ -262,7 +286,59 @@ async function main() {
   );
   assert(stopped.state === "idle", "stop 生效，tvStatus=idle");
 
-  console.log("[9/9] 清理 ...");
+  console.log("[9/12] 等待中枢真正退出后用同一 DATA_DIR 重启 ...");
+  client.close();
+  await stopHub(server);
+  server = startHub(mediaDir, { DLNA_SEED: location, DATA_DIR: dataDir });
+  await server.waitFor(/CastHub 已启动/, 20000, "重启中枢启动");
+  await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
+  client = await connectConsole();
+  const dlnaMsg2 = await waitDlnaDevice(client, 8000);
+  const device2 = dlnaMsg2.list.find((d) => d.type === "dlna");
+  assert(!!device2, `重启后 DLNA 设备出现: ${device2.deviceName} (${device2.id})`);
+
+  console.log("[10/12] getHistory 断言重启后历史仍在 ...");
+  const expectedPath = path.resolve(mediaDir, video.path);
+  client.messages.length = 0;
+  client.send({ type: "getHistory" });
+  const historyReply = await client.waitFor(
+    (m) => m.type === "history" && Array.isArray(m.list) && m.list.some((h) => path.resolve(h.path) === expectedPath),
+    8000,
+    "history 包含 sample.mp4"
+  );
+  const historyEntry = historyReply.list.find((h) => path.resolve(h.path) === expectedPath);
+  console.log("getHistory entry:", JSON.stringify(historyEntry));
+  assert(
+    historyEntry.positionMs >= 29500 && historyEntry.positionMs <= 60000,
+    `getHistory positionMs=${historyEntry.positionMs} ∈ [29500,60000]`
+  );
+  assert(historyEntry.durationMs === 60000, `getHistory durationMs=${historyEntry.durationMs}`);
+  assert(historyEntry.playCount >= 1, `getHistory playCount=${historyEntry.playCount}`);
+
+  console.log("[11/12] cast(resume=true) 断言 DLNA 续播生效 ...");
+  client.messages.length = 0;
+  client.send({ type: "cast", deviceId: device2.id, path: video.path, resume: true });
+  const resumed = await client.waitFor(
+    (m) => m.type === "tvStatus" && m.deviceId === device2.id && m.state === "playing" && m.positionMs >= 29500,
+    15000,
+    "resume=true 后 tvStatus.positionMs>=29500"
+  );
+  assert(
+    resumed.positionMs >= 29500 && resumed.positionMs <= 60000,
+    `resume=true 落回 positionMs=${resumed.positionMs} ∈ [29500,60000]`
+  );
+
+  console.log("[12/12] cast(resume=false) 从头播放并清理 ...");
+  client.messages.length = 0;
+  client.send({ type: "cast", deviceId: device2.id, path: video.path, resume: false });
+  const fromStart = await client.waitFor(
+    (m) => m.type === "tvStatus" && m.deviceId === device2.id && m.state === "playing" && m.positionMs < 5000,
+    15000,
+    "resume=false 后从 0 播放"
+  );
+  assert(fromStart.positionMs < 5000, `resume=false 从头部播放 positionMs=${fromStart.positionMs}`);
+  client.send({ type: "control", deviceId: device2.id, action: "stop" });
+  await sleep(500);
   client.close();
   console.log("\n✅ E2E-DLNA 全部通过");
 }

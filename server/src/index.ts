@@ -9,6 +9,7 @@ import { attachConsoleWs } from "./console-ws";
 import { DeviceManager } from "./devices";
 import { DlnaService } from "./dlna";
 import { registerFileRoutes } from "./files";
+import { createHistoryStore, HistoryRecorder } from "./history";
 import { createRotatingLogStream } from "./log";
 import { resolveConsoleToken } from "./security";
 
@@ -20,6 +21,8 @@ export interface ServerConfig {
   mediaDir: string;
   publicBaseUrl?: string;
   consoleToken?: string;
+  /** 最终历史数据目录（通常由 DATA_DIR / PORTABLE_EXECUTABLE_DIR 推导而来）。 */
+  dataDir?: string;
 }
 
 export interface ServerHandle {
@@ -94,7 +97,19 @@ export function resolveServerConfig(config: ServerConfig, configDir: string = pr
   const publicBaseUrl =
     envPublicBaseUrl !== undefined ? envPublicBaseUrl.trim() : fileConfig.publicBaseUrl ?? config.publicBaseUrl;
   const consoleToken = fileConfig.consoleToken ?? config.consoleToken;
-  return { mediaDir, publicBaseUrl, consoleToken };
+  return { mediaDir, publicBaseUrl, consoleToken, dataDir: resolveDataDir(config) };
+}
+
+/**
+ * 数据目录优先级：DATA_DIR > PORTABLE_EXECUTABLE_DIR（exe 旁）> 项目根目录；
+ * 最终数据库固定放在其下的 data/casthub.db。
+ */
+export function resolveDataDir(config: ServerConfig): string {
+  const envDataDir = (process.env.DATA_DIR ?? "").trim();
+  if (envDataDir) return path.resolve(envDataDir, "data");
+  const portableDir = (process.env.PORTABLE_EXECUTABLE_DIR ?? "").trim();
+  if (portableDir) return path.resolve(portableDir, "data");
+  return config.dataDir ? path.resolve(config.dataDir) : path.resolve(__dirname, "..", "data");
 }
 
 /**
@@ -153,6 +168,9 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const app = Fastify({ logger: logFile ? { level: "info", stream: createRotatingLogStream(logFile) } : true });
   const devices = new DeviceManager();
   const dlna = new DlnaService();
+  const historyHandle = createHistoryStore(resolved.dataDir as string);
+  const history = new HistoryRecorder(historyHandle.store);
+  app.log.info(`播放历史存储: ${historyHandle.kind}  ${historyHandle.filePath}`);
 
   // 安全响应头：控制台页面只允许加载自身资源。
   app.addHook("onSend", async (_request, reply, payload) => {
@@ -177,6 +195,7 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
     consoleToken,
     publicBaseUrl,
     mediaSigningKey,
+    history,
   });
 
   // 控制台静态页面（无构建步骤）
@@ -212,10 +231,13 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   await app.listen({ port, host });
   const displayHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   const url = `http://${formatHostForUrl(displayHost)}:${port}`;
-  app.log.info(`CastHub 已启动 ${url}  MEDIA_BASE=${publicBaseUrl}  MEDIA_DIR=${resolved.mediaDir}`);
+  app.log.info(
+    `CastHub 已启动 ${url}  MEDIA_BASE=${publicBaseUrl}  MEDIA_DIR=${resolved.mediaDir}  HISTORY=${historyHandle.kind}:${historyHandle.filePath}`
+  );
   try {
     await dlna.start();
   } catch (error) {
+    history.close();
     await app.close().catch(() => undefined);
     throw error;
   }
@@ -226,6 +248,7 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
     closed = true;
     await dlna.dispose();
     devices.dispose();
+    history.close();
     for (const client of consoleWs.clients) client.terminate();
     await new Promise<void>((resolve) => consoleWs.close(() => resolve()));
     await app.close();

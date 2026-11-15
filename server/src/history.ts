@@ -343,7 +343,7 @@ export class HistoryRecorder {
       name: file.name,
       completed: false,
       lastState: null,
-      lastSavedPositionMs: null,
+      lastSavedPositionMs: 0,
     });
     this.lastWriteAt.delete(file.path);
     this.suppressed.delete(file.path);

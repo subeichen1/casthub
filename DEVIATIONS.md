@@ -12,3 +12,9 @@
 - 增加 `fast-xml-parser@^4`（dependencies）。
 - 原因：DLNA 兼容模式需要解析带命名空间的 SOAP/XML 响应（GetTransportInfo、GetPositionInfo 等）。按本地名解析 XML 用正则手写易错且难维护，`fast-xml-parser` 是本项目唯一新增的运行时依赖，仅作用于 server 的 DLNA 降级路径，不影响主线 TV App。
 - 影响：不改变锁定协议与 UI，无额外服务或配置。
+
+## Phase 9 — better-sqlite3 不可用时的 JSON 降级
+
+- 锁定决策 2 允许在 `better-sqlite3` 安装失败（编译失败/无预编译产物）时以 JSON 文件实现顶上；本机 `npm.cmd install better-sqlite3@^11 --save` 因缺少 Visual Studio C++ 工具链且预编译下载 `ECONNRESET` 失败。
+- 已实现 `data/casthub-history.json` 整表读写作为唯一降级实现；`HistoryStore` 接口、协议、e2e、控制台 UI 均不变，未引入第三种实现。
+- `server/package.json` 使用 `optionalDependencies` 声明 `better-sqlite3@^11.10.0`，使安装失败不阻塞 `npm install`，并让具备构建工具的人类机器自然启用 SQLite。

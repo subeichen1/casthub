@@ -154,9 +154,11 @@ function assert(condition, message) {
 async function main() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-e2e-"));
   const mediaDir = path.join(tempDir, "media");
+  const dataDir = path.join(tempDir, "data-root");
   fs.mkdirSync(mediaDir, { recursive: true });
   fs.writeFileSync(path.join(mediaDir, "sample.mp4"), Buffer.alloc(256 * 1024, 0x1a));
   console.log("测试媒体目录:", mediaDir);
+  console.log("测试 DATA_DIR:", dataDir);
 
   console.log("\n[1/10] 启动 fake-tv ...");
   const fakeTv = startProcess("fake-tv", ["scripts/fake-tv.mjs"], {
@@ -168,7 +170,7 @@ async function main() {
   console.log("[2/10] 启动中枢 ...");
   const server = startProcess("server", ["--import", "tsx", "src/index.ts"], {
     cwd: SERVER_DIR,
-    env: { ...process.env, PORT: String(HTTP_PORT), HOST: "127.0.0.1", MEDIA_DIR: mediaDir, PUBLIC_BASE_URL: "", CONSOLE_TOKEN }
+    env: { ...process.env, PORT: String(HTTP_PORT), HOST: "127.0.0.1", MEDIA_DIR: mediaDir, PUBLIC_BASE_URL: "", CONSOLE_TOKEN, DATA_DIR: dataDir }
   });
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
@@ -241,7 +243,8 @@ async function main() {
       HOST: "127.0.0.1",
       MEDIA_DIR: mediaDir,
       PUBLIC_BASE_URL: "http://10.0.2.2:9420",
-      CONSOLE_TOKEN
+      CONSOLE_TOKEN,
+      DATA_DIR: dataDir
     }
   });
   await overrideServer.waitFor(/CastHub 已启动/, 20000, "override 中枢启动");
