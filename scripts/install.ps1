@@ -143,8 +143,27 @@ if ($RequireSignature) {
 
 Unblock-File -Path $exePath -ErrorAction SilentlyContinue
 
-$config = [ordered]@{ mediaDir = $MediaDir }
-$json = $config | ConvertTo-Json
+# 保留已有配置（如 desktop.autoStart、publicBaseUrl），只更新 mediaDir；解析失败先备份再重建。
+$config = [ordered]@{}
+$existingConfig = $null
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    try {
+        $existingConfig = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        $backupPath = "$configPath.bak-$(Get-Date -Format 'yyyyMMddHHmmss')"
+        Copy-Item -LiteralPath $configPath -Destination $backupPath -Force -ErrorAction SilentlyContinue
+        Write-Warning "现有 config.json 无法解析，已备份到 $backupPath：$($_.Exception.Message)"
+    }
+    if ($null -ne $existingConfig -and $existingConfig -is [pscustomobject]) {
+        foreach ($property in $existingConfig.PSObject.Properties) {
+            $config[$property.Name] = $property.Value
+        }
+    } elseif ($null -ne $existingConfig) {
+        Write-Warning '现有 config.json 不是 JSON 对象，已忽略其字段并重建。'
+    }
+}
+$config['mediaDir'] = $MediaDir
+$json = $config | ConvertTo-Json -Depth 20
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($configPath, $json, $utf8NoBom)
 

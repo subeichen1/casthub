@@ -93,7 +93,27 @@ function safeLimit(limit: number | undefined): number {
   return Math.min(Math.floor(limit as number), 100_000);
 }
 
-/** SQLite 默认实现。所有方法同步且自行吞掉异常，损坏数据库会删除重建。 */
+function isSqliteCorruption(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "SQLITE_CORRUPT" || code === "SQLITE_NOTADB";
+}
+
+/** 把损坏的数据库及 WAL/SHM 文件改名备份，返回备份前缀。 */
+function backupSqliteFiles(dbPath: string): string {
+  const backupBase = `${dbPath}.corrupt-${Date.now()}`;
+  for (const suffix of ["", "-wal", "-shm"]) {
+    try {
+      fs.renameSync(dbPath + suffix, backupBase + suffix);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.warn(`[history] 备份 SQLite 文件失败 ${dbPath + suffix}: ${(error as Error).message}`);
+      }
+    }
+  }
+  return backupBase;
+}
+
+/** SQLite 默认实现。所有方法同步且自行吞掉异常；仅对确认损坏的数据库备份后重建。 */
 export class SqliteHistoryStore implements HistoryStore {
   private db: BetterSqliteDatabase;
   readonly dbPath: string;
@@ -115,19 +135,15 @@ export class SqliteHistoryStore implements HistoryStore {
       db.exec(CREATE_TABLE_SQL);
       return db;
     } catch (error) {
-      console.error(`[history] SQLite 数据库损坏，删除并重建空库: ${dbPath} (${(error as Error).message})`);
+      if (!isSqliteCorruption(error)) throw error;
+      console.error(`[history] SQLite 数据库损坏，备份并重建空库: ${dbPath} (${(error as Error).message})`);
       try {
         db?.close();
       } catch {
         // ignore
       }
-      for (const suffix of ["", "-wal", "-shm"]) {
-        try {
-          fs.rmSync(dbPath + suffix, { force: true });
-        } catch {
-          // ignore
-        }
-      }
+      const backupBase = backupSqliteFiles(dbPath);
+      console.error(`[history] 损坏数据库已备份到: ${backupBase}`);
       db = new Database(dbPath);
       db.pragma("journal_mode = WAL");
       db.pragma("synchronous = NORMAL");
@@ -350,6 +366,11 @@ export class HistoryRecorder {
   }
 
   stopPlayback(deviceId: string): void {
+    this.active.delete(deviceId);
+  }
+
+  /** 设备被移除时清理活动状态；不影响已持久化的历史记录。 */
+  forgetDevice(deviceId: string): void {
     this.active.delete(deviceId);
   }
 

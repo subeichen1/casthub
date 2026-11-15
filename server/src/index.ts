@@ -1,5 +1,5 @@
 // CastHub 中枢入口：读取 MEDIA_DIR / PUBLIC_BASE_URL / config.json，启动 HTTP + WS 服务
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -112,16 +112,44 @@ export function resolveDataDir(config: ServerConfig): string {
   return config.dataDir ? path.resolve(config.dataDir) : path.resolve(__dirname, "..", "data");
 }
 
+const SENSITIVE_QUERY_KEYS = new Set(["sig", "signature", "token", "access_token", "auth", "key", "api_key"]);
+
+/**
+ * 移除请求 URL 中的签名/令牌查询参数，避免 Fastify 访问日志泄露媒体签名。
+ * 保留路径、expires 等排障所需字段。
+ */
+export function sanitizeRequestUrl(rawUrl: string): string {
+  try {
+    const isAbsolute = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(rawUrl);
+    const url = new URL(rawUrl, "http://localhost");
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (SENSITIVE_QUERY_KEYS.has(key.toLowerCase())) url.searchParams.delete(key);
+    }
+    return isAbsolute ? url.toString() : `${url.pathname}${url.search}`;
+  } catch {
+    return rawUrl;
+  }
+}
+
+/** 仅 RFC1918 私网 IPv4：10/8、172.16/12、192.168/16。 */
+export function isPrivateIpv4(address: string): boolean {
+  if (!net.isIPv4(address)) return false;
+  const [first, second] = address.split(".").map((part) => Number(part));
+  if (first === 10) return true;
+  if (first === 172 && second >= 16 && second <= 31) return true;
+  return first === 192 && second === 168;
+}
+
 /**
  * 探测局域网 IPv4 地址，供电视/手机访问媒体。
- * 过滤回环、链路本地地址，并优先 192.168/10/172.16-31 私网段。
+ * 只选择 RFC1918 私网地址，避免把公网网卡地址当作局域网入口。
  */
 export function detectLanIpv4(): string | null {
   const candidates: Array<{ address: string; score: number }> = [];
   for (const [name, infos] of Object.entries(os.networkInterfaces())) {
     for (const info of infos ?? []) {
       if (!info || info.family !== "IPv4" || info.internal) continue;
-      if (info.address.startsWith("127.") || info.address.startsWith("169.254.")) continue;
+      if (!isPrivateIpv4(info.address)) continue;
       let score = 100;
       const lowerName = name.toLowerCase();
       if (/(docker|veth|vmware|virtualbox|hyper-v|vethernet|wsl|tailscale|zerotier)/.test(lowerName)) {
@@ -130,7 +158,6 @@ export function detectLanIpv4(): string | null {
       if (info.address.startsWith("192.168.")) score -= 10;
       else if (info.address.startsWith("10.")) score += 0;
       else if (/^172\.(1[6-9]|2\d|3[01])\./.test(info.address)) score += 10;
-      else score += 20;
       candidates.push({ address: info.address, score });
     }
   }
@@ -165,7 +192,24 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const mediaSigningKey = randomBytes(32);
 
   const logFile = (process.env.CASTHUB_LOG_FILE ?? "").trim();
-  const app = Fastify({ logger: logFile ? { level: "info", stream: createRotatingLogStream(logFile) } : true });
+  const app = Fastify({
+    logger: logFile ? { level: "info", stream: createRotatingLogStream(logFile) } : true,
+    logController: new LogController({ disableRequestLogging: true })
+  });
+  app.addHook("onRequest", async (request) => {
+    request.log.info({ method: request.method, url: sanitizeRequestUrl(request.url) }, "incoming request");
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    request.log.info(
+      {
+        method: request.method,
+        url: sanitizeRequestUrl(request.url),
+        statusCode: reply.statusCode,
+        responseTimeMs: Math.round(reply.elapsedTime)
+      },
+      "request completed"
+    );
+  });
   const devices = new DeviceManager();
   const dlna = new DlnaService();
   const historyHandle = createHistoryStore(resolved.dataDir as string);

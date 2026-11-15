@@ -17,6 +17,7 @@
     "e2e": "node scripts/e2e.mjs",
     "e2e-history": "node scripts/e2e-history.mjs",
     "e2e-subtitles": "node --import tsx scripts/e2e-subtitles.mjs",
+    "e2e-security": "node --import tsx scripts/e2e-security.mjs",
     "perf": "node scripts/perf-smoke.mjs",
     "desktop": "electron .",
     "dist": "electron-builder --win portable"

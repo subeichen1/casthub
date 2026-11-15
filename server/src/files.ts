@@ -1,5 +1,6 @@
 // 文件浏览（/api/files）与流服务（/media，含手写 Range 处理）
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { Dirent } from "node:fs";
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
@@ -151,7 +152,12 @@ export async function registerFileRoutes(
     if (!stat.isDirectory()) {
       return reply.code(400).send({ error: "not a directory" });
     }
-    const dirents = await fsp.readdir(target, { withFileTypes: true });
+    let dirents: Dirent[];
+    try {
+      dirents = await fsp.readdir(target, { withFileTypes: true });
+    } catch {
+      return reply.code(404).send({ error: "not found" });
+    }
     const entries: MediaFileEntry[] = [];
     for (const dirent of dirents) {
       if (dirent.name.startsWith(".") || dirent.isSymbolicLink()) continue;

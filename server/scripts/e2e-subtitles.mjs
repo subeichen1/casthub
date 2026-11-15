@@ -76,6 +76,8 @@ async function main() {
   fs.writeFileSync(path.join(mediaDir, "movie.zh-CN.srt"), "1\n00:00:01,000 --> 00:00:02,000\n中文字幕\n", "utf8");
   fs.writeFileSync(path.join(mediaDir, "movie.en.sdh.srt"), "1\n00:00:01,000 --> 00:00:02,000\nEnglish SDH\n", "utf8");
   fs.writeFileSync(path.join(mediaDir, "movie.2024.srt"), "1\n00:00:01,000 --> 00:00:02,000\nNot a language tag\n", "utf8");
+  fs.writeFileSync(path.join(mediaDir, "Case.mp4"), Buffer.alloc(1024, 0x1d));
+  fs.writeFileSync(path.join(mediaDir, "case.srt"), "1\n00:00:01,000 --> 00:00:02,000\nCase-insensitive subtitle\n", "utf8");
   fs.writeFileSync(path.join(mediaDir, "select", "movie.mp4"), Buffer.alloc(1024, 0x1b));
   fs.writeFileSync(path.join(mediaDir, "select", "movie.en.srt"), "1\n00:00:01,000 --> 00:00:02,000\nEnglish\n", "utf8");
   fs.writeFileSync(path.join(mediaDir, "select", "Subs", "movie.srt"), "1\n00:00:01,000 --> 00:00:02,000\nExact in Subs\n", "utf8");
@@ -91,6 +93,9 @@ async function main() {
   assert.equal(movieCandidates.some((c) => c.path.endsWith("movie.2024.srt")), false, "排除伪语言后缀 movie.2024.srt");
   const selectedExact = selectSubtitle(movieCandidates);
   assert.ok(selectedExact && selectedExact.path.endsWith("movie.srt"), "优先同目录精确字幕");
+
+  const caseCandidates = await findSubtitleCandidates(path.join(mediaDir, "Case.mp4"));
+  assert.ok(caseCandidates.some((c) => c.path.endsWith("case.srt") && c.exact), "Windows 大小写不敏感匹配 Case.mp4 + case.srt");
 
   const selectCandidates = await findSubtitleCandidates(path.join(mediaDir, "select", "movie.mp4"));
   const before = JSON.stringify(selectCandidates);

@@ -117,6 +117,7 @@ export function attachConsoleWs(
   dlna.onDevicesChanged = broadcastDevices;
   dlna.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
   dlna.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
+  dlna.onDeviceRemoved = (deviceId) => options.history.forgetDevice(deviceId);
 
   wss.on("connection", (ws, req) => {
     if (wss.clients.size > MAX_CONNECTIONS) {
@@ -224,6 +225,7 @@ export function attachConsoleWs(
               break;
             }
             devices.remove(id);
+            options.history.forgetDevice(id);
             broadcastDevices();
             break;
           }

@@ -254,7 +254,15 @@ function isLoopbackAddress(address: string): boolean {
   return address === "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.");
 }
 
-function isPrivateAddress(address: string): boolean {
+function isCgnatAddress(address: string): boolean {
+  const value = ipv4ToInt(address);
+  if (value === null) return false;
+  const start = ipv4ToInt("100.64.0.0")!;
+  const end = ipv4ToInt("100.127.255.255")!;
+  return value >= start && value <= end;
+}
+
+function isPrivateAddress(address: string, allowCgnat = false): boolean {
   if (isLoopbackAddress(address)) return true;
   if (net.isIPv4(address)) {
     const value = ipv4ToInt(address);
@@ -262,10 +270,12 @@ function isPrivateAddress(address: string): boolean {
     const ranges: Array<[number, number]> = [
       [ipv4ToInt("10.0.0.0")!, ipv4ToInt("10.255.255.255")!],
       [ipv4ToInt("172.16.0.0")!, ipv4ToInt("172.31.255.255")!],
-      [ipv4ToInt("192.168.0.0")!, ipv4ToInt("192.168.255.255")!],
-      [ipv4ToInt("100.64.0.0")!, ipv4ToInt("100.127.255.255")!]
+      [ipv4ToInt("192.168.0.0")!, ipv4ToInt("192.168.255.255")!]
     ];
-    return ranges.some(([start, end]) => value >= start && value <= end);
+    if (ranges.some(([start, end]) => value >= start && value <= end)) return true;
+    // CGNAT/Tailscale 兼容必须显式开启；即使开启也排除云厂商元数据地址。
+    if (allowCgnat && isCgnatAddress(address) && address !== "100.100.100.200") return true;
+    return false;
   }
   if (net.isIPv6(address)) {
     const lower = address.toLowerCase();
@@ -277,11 +287,11 @@ function isPrivateAddress(address: string): boolean {
   return false;
 }
 
-function isLocalNetworkAddress(address: string, allowLoopback: boolean): boolean {
+export function isLocalNetworkAddress(address: string, allowLoopback: boolean, allowCgnat = false): boolean {
   if (isLoopbackAddress(address)) return allowLoopback;
   // SECURITY.md 的 DLNA 白名单是「同网段或私网」：私网地址即使不在本机网段也允许，
   // 否则双路由/VLAN/访客网络下电视能被 SSDP 发现却会被来源过滤误杀。
-  if (isPrivateAddress(address)) return true;
+  if (isPrivateAddress(address, allowCgnat)) return true;
   if (!net.isIPv4(address)) return false;
   for (const infos of Object.values(os.networkInterfaces())) {
     for (const info of infos ?? []) {
@@ -292,7 +302,7 @@ function isLocalNetworkAddress(address: string, allowLoopback: boolean): boolean
   return false;
 }
 
-function ssdpInterfaceAddresses(allowLoopback: boolean): string[] {
+function ssdpInterfaceAddresses(allowLoopback: boolean, allowCgnat = false): string[] {
   const addresses: string[] = [];
   const add = (address: string): void => {
     if (!addresses.includes(address)) addresses.push(address);
@@ -302,13 +312,13 @@ function ssdpInterfaceAddresses(allowLoopback: boolean): string[] {
     for (const info of infos ?? []) {
       if (!info || info.internal || info.family !== "IPv4") continue;
       // 只在私网 IPv4 网卡上发 SSDP，避免把多播包发进 VPN/公网网卡。
-      if (isPrivateAddress(info.address)) add(info.address);
+      if (isPrivateAddress(info.address, allowCgnat)) add(info.address);
     }
   }
   return addresses;
 }
 
-async function assertSafeUrl(raw: string, allowLoopback: boolean): Promise<URL> {
+async function assertSafeUrl(raw: string, allowLoopback: boolean, allowCgnat = false): Promise<URL> {
   let url: URL;
   try {
     url = new URL(raw);
@@ -327,7 +337,7 @@ async function assertSafeUrl(raw: string, allowLoopback: boolean): Promise<URL> 
     addresses = resolved.map((item) => item.address);
   }
   if (addresses.length === 0) throw new Error("主机无法解析");
-  if (!addresses.every((address) => isLocalNetworkAddress(address, allowLoopback))) {
+  if (!addresses.every((address) => isLocalNetworkAddress(address, allowLoopback, allowCgnat))) {
     throw new Error(`URL 主机不在局域网内: ${url.hostname}`);
   }
   return url;
@@ -357,7 +367,7 @@ async function readLimitedText(response: Response, limit: number): Promise<strin
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
+function ssdpSearch(st: string, allowLoopback: boolean, allowCgnat = false): Promise<string[]> {
   return new Promise((resolve) => {
     const locations = new Set<string>();
     const socket = createSocket({ type: "udp4", reuseAddr: true });
@@ -378,7 +388,7 @@ function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
 
     timer = setTimeout(finish, SSDP_TIMEOUT_MS);
     socket.on("message", (message, rinfo) => {
-      if (!isLocalNetworkAddress(rinfo.address, allowLoopback)) return;
+      if (!isLocalNetworkAddress(rinfo.address, allowLoopback, allowCgnat)) return;
       if (locations.size >= MAX_SSDP_LOCATIONS) return;
       const response = parseSsdpResponse(message.toString());
       if (response.location) locations.add(response.location);
@@ -399,7 +409,7 @@ function ssdpSearch(st: string, allowLoopback: boolean): Promise<string[]> {
           ""
         ].join("\r\n")
       );
-      const addresses = ssdpInterfaceAddresses(allowLoopback);
+      const addresses = ssdpInterfaceAddresses(allowLoopback, allowCgnat);
       const targets: Array<string | null> = addresses.length > 0 ? addresses : [null];
       try {
         socket.setMulticastTTL(4);
@@ -492,13 +502,16 @@ export class DlnaService {
   private discoverPromise: Promise<DlnaDeviceInfo[]> | null = null;
   private activePolls = new Set<Promise<void>>();
   private allowLoopback: boolean;
+  private allowCgnat: boolean;
 
   onDevicesChanged: (() => void) | null = null;
   onTvStatus: ((deviceId: string, status: TvStatusPayload) => void) | null = null;
   onDeviceError: ((deviceId: string, message: string) => void) | null = null;
+  onDeviceRemoved: ((deviceId: string) => void) | null = null;
 
-  constructor(options: { allowLoopback?: boolean } = {}) {
+  constructor(options: { allowLoopback?: boolean; allowCgnat?: boolean } = {}) {
     this.allowLoopback = options.allowLoopback ?? process.env.DLNA_ALLOW_LOOPBACK === "1";
+    this.allowCgnat = options.allowCgnat ?? process.env.DLNA_ALLOW_CGNAT === "1";
   }
 
   list(): DeviceView[] {
@@ -577,8 +590,8 @@ export class DlnaService {
       }
 
       const responses = await Promise.all([
-        ssdpSearch(MEDIA_RENDERER, this.allowLoopback),
-        ssdpSearch("ssdp:all", this.allowLoopback)
+        ssdpSearch(MEDIA_RENDERER, this.allowLoopback, this.allowCgnat),
+        ssdpSearch("ssdp:all", this.allowLoopback, this.allowCgnat)
       ]);
       const locations = Array.from(new Set(responses.flat())).slice(0, MAX_SSDP_LOCATIONS);
       for (const location of locations) {
@@ -734,7 +747,7 @@ export class DlnaService {
   private async loadDevice(location: string): Promise<DlnaDeviceInfo | null> {
     let safeLocation: URL;
     try {
-      safeLocation = await assertSafeUrl(location, this.allowLoopback);
+      safeLocation = await assertSafeUrl(location, this.allowLoopback, this.allowCgnat);
     } catch (error) {
       console.error(`[dlna] 拒绝设备地址 ${location}: ${(error as Error).message}`);
       return null;
@@ -760,6 +773,7 @@ export class DlnaService {
         if (runtime.pollTimer) clearInterval(runtime.pollTimer);
         if (runtime.volumeTimer) clearInterval(runtime.volumeTimer);
         this.devices.delete(id);
+        this.onDeviceRemoved?.(id);
         console.log(`[dlna] 清理离线设备 ${runtime.info.deviceName}`);
       }
     }
@@ -806,7 +820,7 @@ export class DlnaService {
     serviceType: string = AV_TRANSPORT,
     controlURL: string = runtime.info.controlURL
   ): Promise<string> {
-    const controlUrl = await assertSafeUrl(controlURL, this.allowLoopback);
+    const controlUrl = await assertSafeUrl(controlURL, this.allowLoopback, this.allowCgnat);
     const body =
       '<?xml version="1.0" encoding="utf-8"?>' +
       '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +

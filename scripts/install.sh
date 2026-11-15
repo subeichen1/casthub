@@ -41,14 +41,14 @@ case "$(uname -s)" in
     *) die '此脚本用于 macOS / Linux；Windows 请使用 scripts/install.ps1。' ;;
 esac
 
-command -v node >/dev/null 2>&1 || die '未找到 Node.js，请先安装 Node.js 20+：https://nodejs.org/'
-command -v npm >/dev/null 2>&1 || die '未找到 npm，请重新安装 Node.js 20+。'
+command -v node >/dev/null 2>&1 || die '未找到 Node.js，请先安装 Node.js 22+：https://nodejs.org/'
+command -v npm >/dev/null 2>&1 || die '未找到 npm，请重新安装 Node.js 22+。'
 command -v curl >/dev/null 2>&1 || die '未找到 curl。'
 command -v tar >/dev/null 2>&1 || die '未找到 tar。'
 
 NODE_MAJOR="$(node -p 'Number(process.versions.node.split(".")[0])')"
-if [ "$NODE_MAJOR" -lt 20 ]; then
-    die "当前 Node.js 版本为 $(node -v)，CastHub 需要 Node.js 20 或更高版本。"
+if [ "$NODE_MAJOR" -lt 22 ]; then
+    die "当前 Node.js 版本为 $(node -v)，CastHub 需要 Node.js 22 或更高版本。"
 fi
 
 mkdir -p "$INSTALL_DIR" "$MEDIA_DIR"
@@ -120,11 +120,46 @@ log '编译 TypeScript ...'
 npm run build
 
 CONFIG_PATH="$INSTALL_DIR/config.json"
-cat > "$CONFIG_PATH" <<EOF
+CONFIG_TMP="${CONFIG_PATH}.tmp.$$"
+CONFIG_WRITTEN=0
+if [ -f "$CONFIG_PATH" ]; then
+    if node - "$CONFIG_PATH" "$CONFIG_TMP" "$MEDIA_DIR" <<'NODE'
+const fs = require("node:fs");
+const [source, target, mediaDir] = process.argv.slice(2);
+let config;
+try {
+    const raw = fs.readFileSync(source, "utf8").replace(/^\uFEFF/, "");
+    config = JSON.parse(raw);
+} catch (error) {
+    console.error(String(error));
+    process.exit(1);
+}
+if (!config || typeof config !== "object" || Array.isArray(config)) {
+    console.error("config.json 必须是 JSON 对象");
+    process.exit(1);
+}
+config.mediaDir = mediaDir;
+fs.writeFileSync(target, JSON.stringify(config, null, 2) + "\n", "utf8");
+NODE
+    then
+        mv -f "$CONFIG_TMP" "$CONFIG_PATH"
+        CONFIG_WRITTEN=1
+    else
+        rm -f "$CONFIG_TMP"
+    fi
+fi
+if [ "$CONFIG_WRITTEN" -ne 1 ]; then
+    if [ -f "$CONFIG_PATH" ]; then
+        CONFIG_BACKUP="$CONFIG_PATH.bak-$(date +%Y%m%d%H%M%S)"
+        cp -f "$CONFIG_PATH" "$CONFIG_BACKUP" 2>/dev/null || true
+        warn "现有 config.json 无法解析，已备份到 $CONFIG_BACKUP；将重建配置。"
+    fi
+    cat > "$CONFIG_PATH" <<EOF
 {
   "mediaDir": "$MEDIA_DIR"
 }
 EOF
+fi
 
 START_SCRIPT="$INSTALL_DIR/start-casthub.sh"
 cat > "$START_SCRIPT" <<EOF

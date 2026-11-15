@@ -60,6 +60,19 @@ const LANGUAGE_TAGS = new Set([
 
 const MODIFIERS = new Set(["forced", "sdh", "cc", "default", "full", "sc", "tc"]);
 
+const SUBTITLE_CACHE_TTL_MS = 10_000;
+const SUBTITLE_CACHE_MAX = 200;
+const subtitleCache = new Map<string, { expiresAt: number; candidates: SubtitleCandidate[] }>();
+
+function cloneCandidate(candidate: SubtitleCandidate): SubtitleCandidate {
+  return { ...candidate };
+}
+
+/** 清空字幕扫描缓存（测试或显式刷新时使用）。 */
+export function clearSubtitleCache(): void {
+  subtitleCache.clear();
+}
+
 const ASS_DEFAULT_FIELDS = [
   "layer",
   "start",
@@ -105,8 +118,14 @@ function comparePaths(a: SubtitleCandidate, b: SubtitleCandidate): number {
 
 /** 扫描视频同目录及 Subs/subtitles/sub 一级子目录中的字幕候选。永不抛异常。 */
 export async function findSubtitleCandidates(videoPath: string): Promise<SubtitleCandidate[]> {
+  const absoluteVideo = path.resolve(videoPath);
+  const cacheKey = normalizePathForSort(absoluteVideo);
+  const cached = subtitleCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.candidates.map(cloneCandidate);
+  }
+  if (cached) subtitleCache.delete(cacheKey);
   try {
-    const absoluteVideo = path.resolve(videoPath);
     const base = path.basename(absoluteVideo, path.extname(absoluteVideo));
     const videoDir = path.dirname(absoluteVideo);
     const locations: Array<{ dir: string; rank: number }> = [{ dir: videoDir, rank: 0 }];
@@ -167,6 +186,14 @@ export async function findSubtitleCandidates(videoPath: string): Promise<Subtitl
         }
       }
     }
+    subtitleCache.set(cacheKey, {
+      expiresAt: Date.now() + SUBTITLE_CACHE_TTL_MS,
+      candidates: result.map(cloneCandidate)
+    });
+    if (subtitleCache.size > SUBTITLE_CACHE_MAX) {
+      const oldestKey = subtitleCache.keys().next().value;
+      if (oldestKey) subtitleCache.delete(oldestKey);
+    }
     return result;
   } catch (error) {
     logSkip(videoPath, error instanceof Error ? error.message : String(error));
@@ -182,10 +209,12 @@ function parseCandidateName(
   const format = extWithDot.slice(1) as SubtitleFormat;
   if (!Object.prototype.hasOwnProperty.call(FORMAT_ORDER, format)) return null;
   const stem = fileName.slice(0, -extWithDot.length);
-  if (stem === videoBase) return { format, language: null, exact: true };
-  if (!stem.startsWith(videoBase + ".")) return null;
+  const stemLower = stem.toLowerCase();
+  const videoBaseLower = videoBase.toLowerCase();
+  if (stemLower === videoBaseLower) return { format, language: null, exact: true };
+  if (!stemLower.startsWith(videoBaseLower + ".")) return null;
 
-  const suffix = stem.slice(videoBase.length + 1);
+  const suffix = stemLower.slice(videoBaseLower.length + 1);
   const parts = suffix.split(".");
   if (parts.length === 0 || !parts[0]) return null;
   const language = parts[0].toLowerCase();

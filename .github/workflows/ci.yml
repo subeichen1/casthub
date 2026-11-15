@@ -36,6 +36,8 @@ jobs:
         run: cd server && node scripts/e2e-history.mjs
       - name: E2E (Subtitles)
         run: cd server && npm run e2e-subtitles
+      - name: E2E (Security)
+        run: cd server && npm run e2e-security
       - name: SBOM (CycloneDX)
         run: cd server && npm sbom --sbom-format=cyclonedx > sbom.json
       - name: Upload SBOM
