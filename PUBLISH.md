@@ -2,6 +2,8 @@
 
 > **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
+> **v0.2.1 状态（2026-11-16）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.1>（release id `447082839`）。Release workflow run `43875933408` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,632,872 字节）、`CastHub-TV.apk`（1,824,063 字节）、`casthub-src.tar.gz`（2,013,622 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `49765b5`，CI run `43875910909` 为 `success`。
+>
 > **v0.2.0 状态（2026-11-15）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.0>（release id `445993590`）。Release workflow run `43706644078` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,625,936 字节）、`CastHub-TV.apk`（1,824,057 字节）、`casthub-src.tar.gz`（1,971,821 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `c3aa104`，CI run `43706624549` 为 `success`。
 >
 > **v0.1.1 状态（2026-11-15）**：已使用开发自签名证书和开发 release keystore 完成正式构建。Release workflow run `43617653552` 的 windows / android / source / publish 四个 job 全部 `success`；Release <https://github.com/subeichen1/casthub/releases/tag/v0.1.1> 已发布 `CastHub.exe`、`CastHub-TV.apk`、`casthub-src.tar.gz` 与 `checksums.txt`。发布相关文档提交后的 CI run `43618122110`、`43618395855` 均为 `success`。开发签名可能触发 Windows“未知发布者”提示，生产分发需替换正式证书。
@@ -97,6 +99,10 @@ git log origin/main -1 --oneline
    - GitHub Actions 的容器网络通常限制多播，`e2e-dlna.mjs` 在 8 秒内发现不到 DLNA 设备时会自动改用 `DLNA_SEED` 重启中枢（脚本 `server/scripts/e2e-dlna.mjs` 第 201–214 行的降级分支），不会硬失败。若 CI 仍失败，请点进具体 job 查看日志。
 
 ## 5. Release 记录（已由 Release workflow 自动完成）
+
+### v0.2.1（2026-11-16）
+
+> tag `v0.2.1`（指向 `49765b58be3e91cbf33fcd189d1c6cfcb099420f`），Release workflow run `43875933408` 的 windows / android / source / publish 四个 job 全部 `success`。Release id `447082839`：<https://github.com/subeichen1/casthub/releases/tag/v0.2.1>。资产 `CastHub.exe`（119,632,872 字节）、`CastHub-TV.apk`（1,824,063 字节）、`casthub-src.tar.gz`（2,013,622 字节）、`checksums.txt`（244 字节）。本版本包含 DLNA 内嵌字幕、DLNA 播放队列与 Windows portable 自动更新；服务端和 Android TV 版本号均为 0.2.1。
 
 ### v0.2.0（2026-11-15）
 
