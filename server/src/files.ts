@@ -40,6 +40,8 @@ export interface FileRouteOptions {
   consoleToken: string;
   mediaSigningKey: Buffer;
   publicBaseUrl: string;
+  /** 内嵌字幕抽取与去字幕副本缓存目录（必须位于 mediaRoot 之外）。 */
+  embeddedCacheDir: string;
 }
 
 const MAX_SUBTITLE_BYTES = 5 * 1024 * 1024;
@@ -80,6 +82,32 @@ export function buildSubtitleUrl(
   const expires = Date.now() + MEDIA_URL_TTL_MS;
   const signature = signMediaPath(signingKey, rel, expires);
   return `${publicBaseUrl}/api/subtitle?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}`;
+}
+
+/** 生成内嵌字幕 SRT 的签名 URL；文件位于 embeddedCacheDir。 */
+export function buildEmbeddedSubtitleUrl(
+  publicBaseUrl: string,
+  cacheRoot: string,
+  subtitlePath: string,
+  signingKey: Buffer
+): string {
+  const rel = path.relative(cacheRoot, subtitlePath).split(path.sep).join("/");
+  const expires = Date.now() + MEDIA_URL_TTL_MS;
+  const signature = signMediaPath(signingKey, rel, expires);
+  return `${publicBaseUrl}/api/embedded-subtitle?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}`;
+}
+
+/** 生成去字幕副本的签名 URL；文件位于 embeddedCacheDir。 */
+export function buildEmbeddedMediaUrl(
+  publicBaseUrl: string,
+  cacheRoot: string,
+  mediaPath: string,
+  signingKey: Buffer
+): string {
+  const rel = path.relative(cacheRoot, mediaPath).split(path.sep).join("/");
+  const expires = Date.now() + MEDIA_URL_TTL_MS;
+  const signature = signMediaPath(signingKey, rel, expires);
+  return `${publicBaseUrl}/api/embedded-media?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}`;
 }
 
 /** 在 resolveWithin 的基础上做 realpath 校验，阻止通过符号链接逃逸 mediaRoot。 */
@@ -124,12 +152,93 @@ function mediaAuthorized(request: FastifyRequest, relativePath: string, options:
   return consoleAuthorized(request, options);
 }
 
+/** 将已打开的文件按 HTTP Range 规则发送；embedded-media 与 /media 的 Range 语义保持一致。 */
+async function sendFileWithRange(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  handle: fsp.FileHandle,
+  stat: fs.Stats,
+  contentType: string,
+  captionInfoUrl?: string
+): Promise<unknown> {
+  try {
+    const size = stat.size;
+    const rawRange = typeof request.headers.range === "string" ? request.headers.range.trim() : "";
+    const rangeHeader = !rawRange.startsWith("bytes=") || rawRange.includes(",") ? "" : rawRange;
+    let start = 0;
+    let end = size > 0 ? size - 1 : 0;
+    let statusCode = 200;
+
+    if (rangeHeader) {
+      const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+      if (!match) {
+        await handle.close();
+        reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "invalid range" });
+        return;
+      }
+      const [, startRaw, endRaw] = match;
+      if (startRaw === "" && endRaw === "") {
+        await handle.close();
+        reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "invalid range" });
+        return;
+      }
+      if (startRaw === "") {
+        if (!/^\d+$/.test(endRaw)) {
+          await handle.close();
+          reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "invalid range" });
+          return;
+        }
+        const suffixLength = Number(endRaw);
+        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+          await handle.close();
+          reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "invalid range" });
+          return;
+        }
+        start = Math.max(0, size - suffixLength);
+      } else {
+        if (!/^\d+$/.test(startRaw) || (endRaw !== "" && !/^\d+$/.test(endRaw))) {
+          await handle.close();
+          reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "invalid range" });
+          return;
+        }
+        start = Number(startRaw);
+        end = endRaw === "" ? size - 1 : Number(endRaw);
+      }
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size || size === 0) {
+        await handle.close();
+        reply.code(416).header("Content-Range", `bytes */${size}`).send({ error: "range not satisfiable" });
+        return;
+      }
+      if (end >= size) end = size - 1;
+      statusCode = 206;
+    }
+
+    reply.header("Accept-Ranges", "bytes");
+    reply.header("Content-Type", contentType);
+    if (captionInfoUrl) reply.header("CaptionInfo.sec", captionInfoUrl);
+    if (statusCode === 206) reply.header("Content-Range", `bytes ${start}-${end}/${size}`);
+    reply.header("Content-Length", statusCode === 206 ? end - start + 1 : size);
+    reply.code(statusCode);
+    if (request.method === "HEAD" || size === 0) {
+      await handle.close();
+      reply.send();
+      return;
+    }
+    return reply.send(handle.createReadStream({ start, end, autoClose: true }));
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function registerFileRoutes(
   app: FastifyInstance,
   mediaRoot: string,
   options: FileRouteOptions
 ): Promise<void> {
   const rootReal = await fsp.realpath(mediaRoot);
+  await fsp.mkdir(options.embeddedCacheDir, { recursive: true });
+  const embeddedRootReal = await fsp.realpath(options.embeddedCacheDir);
   app.get("/api/files", async (request: FastifyRequest, reply: FastifyReply) => {
     if (!consoleAuthorized(request, options)) {
       return reply.code(401).send({ error: "unauthorized" });
@@ -230,6 +339,90 @@ export async function registerFileRoutes(
         .code(200);
       if (request.method === "HEAD") return reply.send();
       return reply.send(utf8);
+    }
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/api/embedded-subtitle",
+    handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as { path?: string };
+      const rel = typeof query.path === "string" ? query.path : "";
+      if (!rel || !mediaAuthorized(request, rel, options)) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const target = await resolveWithinReal(embeddedRootReal, rel);
+      if (!target || path.extname(target).toLowerCase() !== ".srt") {
+        return reply.code(404).send({ error: "not found" });
+      }
+      let stat: fs.Stats;
+      try {
+        stat = await fsp.stat(target);
+      } catch {
+        return reply.code(404).send({ error: "not found" });
+      }
+      if (!stat.isFile()) return reply.code(404).send({ error: "not found" });
+      if (stat.size > MAX_SUBTITLE_BYTES) return reply.code(413).send({ error: "subtitle too large" });
+      let raw: Buffer;
+      try {
+        raw = await fsp.readFile(target);
+      } catch {
+        return reply.code(404).send({ error: "not found" });
+      }
+      reply
+        .header("Content-Type", `${mimeTypeOf("subtitle.srt")}; charset=utf-8`)
+        .header("Content-Length", raw.length)
+        .header("Cache-Control", "no-store")
+        .code(200);
+      if (request.method === "HEAD") return reply.send();
+      return reply.send(raw);
+    }
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/api/embedded-media",
+    handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      const query = request.query as { path?: string; subtitles?: string };
+      const rel = typeof query.path === "string" ? query.path : "";
+      if (!rel || !mediaAuthorized(request, rel, options)) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const target = await resolveWithinReal(embeddedRootReal, rel);
+      if (!target) return reply.code(404).send({ error: "not found" });
+      const extension = path.extname(target).toLowerCase();
+      if (extension !== ".mp4" && extension !== ".m4v" && extension !== ".mkv") {
+        return reply.code(415).send({ error: "unsupported embedded media format" });
+      }
+      // 先打开再 stat，避免检查与读取之间被替换（与 /media 相同）。
+      let handle: fsp.FileHandle;
+      let stat: fs.Stats;
+      try {
+        handle = await fsp.open(target, "r");
+        stat = await handle.stat();
+      } catch {
+        return reply.code(404).send({ error: "not found" });
+      }
+      if (!stat.isFile()) {
+        await handle.close();
+        return reply.code(404).send({ error: "not found" });
+      }
+
+      let captionInfoUrl: string | undefined;
+      const subtitleDisabled = query.subtitles === "0";
+      const wantsCaptionInfo = Object.keys(request.headers).some((key) => key.toLowerCase() === "getcaptioninfo.sec");
+      if (!subtitleDisabled && wantsCaptionInfo) {
+        const mediaName = path.basename(target);
+        const srtName = mediaName.replace(/\.nosubs\.[^.]+$/i, ".srt");
+        if (srtName !== mediaName) {
+          const srtPath = path.join(path.dirname(target), srtName);
+          const srtStat = await fsp.stat(srtPath).catch(() => null);
+          if (srtStat?.isFile()) {
+            captionInfoUrl = buildEmbeddedSubtitleUrl(options.publicBaseUrl, embeddedRootReal, srtPath, options.mediaSigningKey);
+          }
+        }
+      }
+      await sendFileWithRange(request, reply, handle, stat, mimeTypeOf(target), captionInfoUrl);
     }
   });
 

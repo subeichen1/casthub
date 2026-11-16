@@ -10,6 +10,7 @@ import { DeviceManager } from "./devices";
 import { DlnaService } from "./dlna";
 import { registerFileRoutes } from "./files";
 import { createHistoryStore, HistoryRecorder } from "./history";
+import { detectEmbeddedSubtitleTools } from "./embedded-subtitles";
 import { createRotatingLogStream } from "./log";
 import { resolveConsoleToken } from "./security";
 
@@ -215,6 +216,12 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const historyHandle = createHistoryStore(resolved.dataDir as string);
   const history = new HistoryRecorder(historyHandle.store);
   app.log.info(`播放历史存储: ${historyHandle.kind}  ${historyHandle.filePath}`);
+  const embeddedCacheDir = path.join(resolved.dataDir as string, "cache", "embedded-subtitles");
+  await fs.promises.mkdir(embeddedCacheDir, { recursive: true });
+  const embeddedTools = await detectEmbeddedSubtitleTools();
+  app.log.info(
+    `内嵌字幕工具: ffprobe=${embeddedTools.ffprobe ? "可用" : "不可用"} ffmpeg=${embeddedTools.ffmpeg ? "可用" : "不可用"}`
+  );
 
   // 安全响应头：控制台页面只允许加载自身资源。
   app.addHook("onSend", async (_request, reply, payload) => {
@@ -234,12 +241,18 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const publicHost = host === "0.0.0.0" || host === "::" ? lanIp ?? "127.0.0.1" : host;
   const publicBaseUrl = (explicitPublicBaseUrl || `http://${formatHostForUrl(publicHost)}:${port}`).replace(/\/+$/, "");
 
-  await registerFileRoutes(app, resolved.mediaDir, { consoleToken, mediaSigningKey, publicBaseUrl });
+  await registerFileRoutes(app, resolved.mediaDir, {
+    consoleToken,
+    mediaSigningKey,
+    publicBaseUrl,
+    embeddedCacheDir,
+  });
   const consoleWs = attachConsoleWs(app, devices, resolved.mediaDir, dlna, {
     consoleToken,
     publicBaseUrl,
     mediaSigningKey,
     history,
+    embeddedCacheDir
   });
 
   // 控制台静态页面（无构建步骤）

@@ -28,6 +28,8 @@ jobs:
         run: cd server && npm run typecheck && npm run lint && npm run build
       - name: Dependency audit (production + dev)
         run: cd server && npm audit --audit-level=high
+      - name: Updater unit tests
+        run: cd server && npm run test:updater
       - name: E2E (App casting)
         run: cd server && node scripts/e2e.mjs
       - name: E2E (DLNA fallback)
@@ -36,6 +38,10 @@ jobs:
         run: cd server && node scripts/e2e-history.mjs
       - name: E2E (Subtitles)
         run: cd server && npm run e2e-subtitles
+      - name: E2E (Embedded subtitles)
+        run: cd server && npm run e2e-embedded-subtitles
+      - name: E2E (Playback queue)
+        run: cd server && npm run e2e-queue
       - name: E2E (Security)
         run: cd server && npm run e2e-security
       - name: SBOM (CycloneDX)

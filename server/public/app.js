@@ -5,6 +5,7 @@
   const state = {
     devices: [],
     history: [],
+    queues: {},
     selectedDeviceId: null,
     files: [],
     filesOffset: 0,
@@ -20,7 +21,8 @@
     volumeSendTimer: null,
     lastVolumeSentAt: 0,
     consoleToken: "",
-    authenticated: false
+    authenticated: false,
+    desktopUpdateBusy: false,
   };
 
   const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
@@ -28,10 +30,22 @@
   const incomingToken = tokenFromHash || tokenFromQuery;
   if (incomingToken) {
     state.consoleToken = incomingToken;
-    try { localStorage.setItem("casthub-token", incomingToken); } catch (error) { /* ignore */ }
-    try { history.replaceState(null, "", location.pathname); } catch (error) { /* ignore */ }
+    try {
+      localStorage.setItem("casthub-token", incomingToken);
+    } catch (error) {
+      /* ignore */
+    }
+    try {
+      history.replaceState(null, "", location.pathname);
+    } catch (error) {
+      /* ignore */
+    }
   } else {
-    try { state.consoleToken = localStorage.getItem("casthub-token") || ""; } catch (error) { /* ignore */ }
+    try {
+      state.consoleToken = localStorage.getItem("casthub-token") || "";
+    } catch (error) {
+      /* ignore */
+    }
   }
 
   const els = {
@@ -63,13 +77,19 @@
     volumeValue: document.getElementById("volumeValue"),
     volumeHint: document.getElementById("volumeHint"),
     dlnaOptions: document.getElementById("dlnaOptions"),
-    dlnaSubtitles: document.getElementById("dlnaSubtitles"),
+    dlnaSubtitleMode: document.getElementById("dlnaSubtitleMode"),
+    queueTitle: document.getElementById("queueTitle"),
+    queueStatus: document.getElementById("queueStatus"),
+    queueList: document.getElementById("queueList"),
+    queuePlayBtn: document.getElementById("queuePlayBtn"),
+    queueClearBtn: document.getElementById("queueClearBtn"),
     desktopSettingsPanel: document.getElementById("desktopSettingsPanel"),
     desktopVersion: document.getElementById("desktopVersion"),
     autoStartToggle: document.getElementById("autoStartToggle"),
     desktopCheckUpdatesBtn: document.getElementById("desktopCheckUpdatesBtn"),
+    desktopInstallUpdateBtn: document.getElementById("desktopInstallUpdateBtn"),
     updateStatus: document.getElementById("updateStatus"),
-    toast: document.getElementById("toast")
+    toast: document.getElementById("toast"),
   };
 
   let toastTimer = null;
@@ -103,7 +123,9 @@
       return;
     }
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(protocol + "//" + location.host + "/console?token=" + encodeURIComponent(state.consoleToken));
+    const ws = new WebSocket(
+      protocol + "//" + location.host + "/console?token=" + encodeURIComponent(state.consoleToken),
+    );
     state.ws = ws;
 
     ws.onopen = function () {
@@ -158,17 +180,29 @@
     }
     if (msg.type === "devices") {
       state.devices = Array.isArray(msg.list) ? msg.list : [];
-      if (!state.devices.some(function (d) { return d.id === state.selectedDeviceId; })) {
-        const firstOnline = state.devices.find(function (d) { return d.online; });
-        state.selectedDeviceId = firstOnline ? firstOnline.id : (state.devices[0] ? state.devices[0].id : null);
+      if (
+        !state.devices.some(function (d) {
+          return d.id === state.selectedDeviceId;
+        })
+      ) {
+        const firstOnline = state.devices.find(function (d) {
+          return d.online;
+        });
+        state.selectedDeviceId = firstOnline ? firstOnline.id : state.devices[0] ? state.devices[0].id : null;
         state.tvStatus = null;
       }
-      if (state.castingDeviceId && !state.devices.some(function (d) { return d.id === state.castingDeviceId; })) {
+      if (
+        state.castingDeviceId &&
+        !state.devices.some(function (d) {
+          return d.id === state.castingDeviceId;
+        })
+      ) {
         state.castingDeviceId = null;
       }
       renderDevices();
       renderControls();
       updateDlnaBanner();
+      renderQueue();
       if (state.files.length) renderFiles();
       return;
     }
@@ -177,6 +211,11 @@
         state.tvStatus = msg;
         renderControls();
       }
+      return;
+    }
+    if (msg.type === "queue") {
+      if (msg.deviceId) state.queues[msg.deviceId] = msg.queue;
+      renderQueue();
       return;
     }
     if (msg.type === "error") {
@@ -218,7 +257,7 @@
       day: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
-      hour12: false
+      hour12: false,
     });
   }
 
@@ -230,9 +269,11 @@
     state.currentTitle = entry.name;
     els.playerTitle.textContent = entry.name;
     const payload = { type: "cast", deviceId: state.selectedDeviceId, path: entry.path, resume: !!resume };
-    const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
+    const selected = state.devices.find(function (d) {
+      return d.id === state.selectedDeviceId;
+    });
     if (selected && selected.type === "dlna") {
-      payload.subtitles = els.dlnaSubtitles.checked;
+      payload.subtitleMode = els.dlnaSubtitleMode.value;
     }
     if (send(payload)) {
       state.castingDeviceId = state.selectedDeviceId;
@@ -289,20 +330,27 @@
       main.appendChild(progress);
       const meta = document.createElement("div");
       meta.className = "history-meta";
-      meta.textContent = "更新 " + formatUpdatedAt(entry.updatedAt) + " · 播放 " + (Number(entry.playCount) || 0) + " 次";
+      meta.textContent =
+        "更新 " + formatUpdatedAt(entry.updatedAt) + " · 播放 " + (Number(entry.playCount) || 0) + " 次";
       const actions = document.createElement("div");
       actions.className = "history-actions";
       const continueBtn = document.createElement("button");
       continueBtn.textContent = "继续播放";
-      continueBtn.addEventListener("click", function () { castHistory(entry, true); });
+      continueBtn.addEventListener("click", function () {
+        castHistory(entry, true);
+      });
       const restartBtn = document.createElement("button");
       restartBtn.className = "secondary";
       restartBtn.textContent = "从头播放";
-      restartBtn.addEventListener("click", function () { castHistory(entry, false); });
+      restartBtn.addEventListener("click", function () {
+        castHistory(entry, false);
+      });
       const deleteBtn = document.createElement("button");
       deleteBtn.className = "danger";
       deleteBtn.textContent = "删除";
-      deleteBtn.addEventListener("click", function () { send({ type: "deleteHistory", path: entry.path }); });
+      deleteBtn.addEventListener("click", function () {
+        send({ type: "deleteHistory", path: entry.path });
+      });
       actions.appendChild(continueBtn);
       actions.appendChild(restartBtn);
       actions.appendChild(deleteBtn);
@@ -311,6 +359,72 @@
       row.appendChild(actions);
       els.historyList.appendChild(row);
     });
+  }
+
+  function renderQueue() {
+    const selected = state.devices.find(function (d) {
+      return d.id === state.selectedDeviceId;
+    });
+    const isDlna = !!(selected && selected.type === "dlna");
+    const queue = selected ? state.queues[selected.id] : null;
+    const items = queue && Array.isArray(queue.items) ? queue.items : [];
+    els.queueTitle.textContent = "播放队列（" + items.length + "）";
+    els.queueList.innerHTML = "";
+
+    if (!selected) {
+      els.queueStatus.textContent = "请先选择设备";
+    } else if (!isDlna) {
+      els.queueStatus.textContent = "队列功能暂只支持 DLNA";
+    } else if (!items.length) {
+      els.queueStatus.textContent = "队列为空";
+    } else if (queue.state === "completed") {
+      els.queueStatus.textContent = "队列已完成";
+    } else if (queue.state === "playing" || queue.state === "switching") {
+      els.queueStatus.textContent = "正在播放 " + (queue.currentIndex + 1) + "/" + items.length;
+    } else if (queue.state === "paused") {
+      els.queueStatus.textContent = "队列已暂停（第 " + (queue.currentIndex + 1) + "/" + items.length + " 项）";
+    } else {
+      els.queueStatus.textContent = "队列待播放";
+    }
+    if (queue && queue.error) els.queueStatus.textContent += " · " + queue.error;
+
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = isDlna ? "还没有节目，点击视频行的“加入队列”" : "仅 DLNA 设备支持队列";
+      els.queueList.appendChild(empty);
+    } else {
+      items.forEach(function (item, index) {
+        const row = document.createElement("div");
+        row.className = "queue-item" + (queue.currentIndex === index ? " active" : "");
+        const idx = document.createElement("span");
+        idx.className = "queue-index";
+        idx.textContent = String(index + 1);
+        const name = document.createElement("span");
+        name.className = "queue-name";
+        name.textContent = item.name || item.path || "";
+        name.title = item.name || item.path || "";
+        const removeBtn = document.createElement("button");
+        removeBtn.className = "secondary";
+        removeBtn.textContent = "移除";
+        const isCurrent = queue.currentIndex === index && (queue.state === "playing" || queue.state === "switching");
+        removeBtn.disabled = isCurrent;
+        if (isCurrent) removeBtn.title = "当前播放项不允许移除，请先停止播放";
+        removeBtn.addEventListener("click", function () {
+          send({ type: "queueRemove", deviceId: selected.id, index: index });
+        });
+        row.appendChild(idx);
+        row.appendChild(name);
+        row.appendChild(removeBtn);
+        els.queueList.appendChild(row);
+      });
+    }
+
+    els.queuePlayBtn.disabled =
+      !isDlna || !items.length || !queue || queue.state === "playing" || queue.state === "switching";
+    els.queuePlayBtn.textContent =
+      queue && queue.state === "paused" ? "继续队列" : queue && queue.state === "completed" ? "重新播放" : "开始播放";
+    els.queueClearBtn.disabled = !isDlna || !items.length;
   }
 
   function renderDevices() {
@@ -324,14 +438,27 @@
       const row = document.createElement("div");
       row.className = "device" + (device.id === state.selectedDeviceId ? " active" : "");
       const removeButton = isDlna
-        ? '<span>自动发现</span>'
+        ? "<span>自动发现</span>"
         : '<button class="danger" data-remove="' + escapeHtml(device.id) + '">移除</button>';
       row.innerHTML =
-        '<div><span class="badge ' + (isDlna ? "dlna" : "app") + '">' + (isDlna ? "DLNA" : "App") + '</span>' +
-        '<span class="name">' + escapeHtml(device.deviceName || (isDlna ? "DLNA 设备" : "电视")) + '</span></div>' +
-        '<div class="addr">' + escapeHtml(device.address) + '</div>' +
-        '<div class="meta"><span><span class="dot' + (device.online ? " online" : "") + '"></span>' +
-        (device.online ? "在线" : "离线") + '</span>' + removeButton + '</div>';
+        '<div><span class="badge ' +
+        (isDlna ? "dlna" : "app") +
+        '">' +
+        (isDlna ? "DLNA" : "App") +
+        "</span>" +
+        '<span class="name">' +
+        escapeHtml(device.deviceName || (isDlna ? "DLNA 设备" : "电视")) +
+        "</span></div>" +
+        '<div class="addr">' +
+        escapeHtml(device.address) +
+        "</div>" +
+        '<div class="meta"><span><span class="dot' +
+        (device.online ? " online" : "") +
+        '"></span>' +
+        (device.online ? "在线" : "离线") +
+        "</span>" +
+        removeButton +
+        "</div>";
       row.addEventListener("click", function (event) {
         if (event.target && event.target.getAttribute("data-remove")) return;
         state.selectedDeviceId = device.id;
@@ -339,6 +466,7 @@
         renderDevices();
         renderControls();
         updateDlnaBanner();
+        renderQueue();
         renderFiles();
       });
       els.deviceList.appendChild(row);
@@ -352,15 +480,21 @@
   }
 
   function updateDlnaBanner() {
-    const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
-    const casting = state.devices.find(function (d) { return d.id === state.castingDeviceId; });
+    const selected = state.devices.find(function (d) {
+      return d.id === state.selectedDeviceId;
+    });
+    const casting = state.devices.find(function (d) {
+      return d.id === state.castingDeviceId;
+    });
     const visible = !!((selected && selected.type === "dlna") || (casting && casting.type === "dlna"));
     els.dlnaBanner.hidden = !visible;
   }
 
   function renderControls() {
     const status = state.tvStatus;
-    const selected = state.devices.find(function (d) { return d.id === state.selectedDeviceId; });
+    const selected = state.devices.find(function (d) {
+      return d.id === state.selectedDeviceId;
+    });
     const isDlna = !!(selected && selected.type === "dlna");
     const canControl = !!(selected && selected.online && status);
     const tvState = status ? status.state : "idle";
@@ -428,7 +562,9 @@
     const hours = Math.floor(total / 3600);
     const minutes = Math.floor((total % 3600) / 60);
     const seconds = total % 60;
-    const pad = function (n) { return n < 10 ? "0" + n : String(n); };
+    const pad = function (n) {
+      return n < 10 ? "0" + n : String(n);
+    };
     if (hours > 0) return hours + ":" + pad(minutes) + ":" + pad(seconds);
     return pad(minutes) + ":" + pad(seconds);
   }
@@ -460,7 +596,7 @@
     }
     const offset = append ? state.filesOffset : 0;
     fetch("/api/files?path=" + encodeURIComponent(state.currentPath) + "&limit=200&offset=" + offset, {
-      headers: { "x-casthub-token": state.consoleToken }
+      headers: { "x-casthub-token": state.consoleToken },
     })
       .then(function (response) {
         if (response.status === 401) {
@@ -487,7 +623,9 @@
     els.breadcrumb.innerHTML = "";
     const root = document.createElement("a");
     root.textContent = "媒体库";
-    root.addEventListener("click", function () { loadFiles(""); });
+    root.addEventListener("click", function () {
+      loadFiles("");
+    });
     els.breadcrumb.appendChild(root);
     if (!state.currentPath) return;
     const parts = state.currentPath.split("/");
@@ -500,7 +638,9 @@
       const link = document.createElement("a");
       link.textContent = part;
       const target = accumulated;
-      link.addEventListener("click", function () { loadFiles(target); });
+      link.addEventListener("click", function () {
+        loadFiles(target);
+      });
       els.breadcrumb.appendChild(link);
     });
   }
@@ -516,13 +656,25 @@
       const row = document.createElement("div");
       row.className = "file-row" + (entry.isDir ? " dir" : "");
       row.innerHTML =
-        '<span>' + (entry.isDir ? "📁" : "🎬") + '</span>' +
-        '<span class="file-name" title="' + escapeHtml(entry.name) + '">' + escapeHtml(entry.name) + '</span>' +
-        '<span class="file-mime">' + escapeHtml(entry.mimeType || (entry.isDir ? "文件夹" : "")) + '</span>' +
-        '<span class="file-size">' + (entry.isDir ? "-" : formatSize(entry.size)) + '</span>' +
-        '<span></span>';
+        "<span>" +
+        (entry.isDir ? "📁" : "🎬") +
+        "</span>" +
+        '<span class="file-name" title="' +
+        escapeHtml(entry.name) +
+        '">' +
+        escapeHtml(entry.name) +
+        "</span>" +
+        '<span class="file-mime">' +
+        escapeHtml(entry.mimeType || (entry.isDir ? "文件夹" : "")) +
+        "</span>" +
+        '<span class="file-size">' +
+        (entry.isDir ? "-" : formatSize(entry.size)) +
+        "</span>" +
+        "<span></span>";
       if (entry.isDir) {
-        row.addEventListener("click", function () { loadFiles(entry.path); });
+        row.addEventListener("click", function () {
+          loadFiles(entry.path);
+        });
       } else {
         const historyEntry = historyForFile(entry);
         const actions = document.createElement("div");
@@ -548,6 +700,20 @@
           });
           actions.appendChild(restartBtn);
         }
+        const selectedDevice = state.devices.find(function (d) {
+          return d.id === state.selectedDeviceId;
+        });
+        const queueBtn = document.createElement("button");
+        queueBtn.className = "secondary";
+        queueBtn.textContent = "加入队列";
+        queueBtn.disabled = !(selectedDevice && selectedDevice.type === "dlna");
+        queueBtn.title = queueBtn.disabled ? "请先选择 DLNA 设备" : "追加到该设备的播放队列";
+        queueBtn.addEventListener("click", function (event) {
+          event.stopPropagation();
+          if (!state.selectedDeviceId) return;
+          send({ type: "queueAdd", deviceId: state.selectedDeviceId, path: entry.path });
+        });
+        actions.appendChild(queueBtn);
         row.lastElementChild.appendChild(actions);
       }
       els.fileList.appendChild(row);
@@ -566,11 +732,28 @@
     send({ type: "clearHistory" });
   });
 
+  els.queuePlayBtn.addEventListener("click", function () {
+    if (!state.selectedDeviceId) return;
+    send({ type: "queuePlay", deviceId: state.selectedDeviceId });
+  });
+
+  els.queueClearBtn.addEventListener("click", function () {
+    if (!state.selectedDeviceId) return;
+    if (!window.confirm("确定清空播放队列？正在播放时会先停止当前视频。")) return;
+    send({ type: "queueClear", deviceId: state.selectedDeviceId });
+  });
+
   els.addDeviceBtn.addEventListener("click", function () {
     const address = els.deviceAddress.value.trim();
     const token = els.deviceToken.value.trim();
-    if (!address) { showToast("请输入电视 WS 地址", true); return; }
-    if (!/^\d{6,8}$/.test(token)) { showToast("配对码必须是 6-8 位数字", true); return; }
+    if (!address) {
+      showToast("请输入电视 WS 地址", true);
+      return;
+    }
+    if (!/^\d{6,8}$/.test(token)) {
+      showToast("配对码必须是 6-8 位数字", true);
+      return;
+    }
     if (send({ type: "addDevice", address: address, token: token })) {
       els.deviceAddress.value = "";
       els.deviceToken.value = "";
@@ -614,7 +797,7 @@
       type: "control",
       deviceId: state.selectedDeviceId,
       action: "seek",
-      positionMs: Number(els.seekSlider.value)
+      positionMs: Number(els.seekSlider.value),
     });
   });
 
@@ -633,63 +816,149 @@
     els.updateStatus.textContent = message || "";
   }
 
+  function setInstallButton(label, disabled) {
+    els.desktopInstallUpdateBtn.textContent = label;
+    els.desktopInstallUpdateBtn.disabled = disabled === true;
+  }
+
+  function applyUpdateInfo(info) {
+    if (state.desktopUpdateBusy) return;
+    const version = info && info.version ? String(info.version) : "";
+    els.desktopInstallUpdateBtn.hidden = !version;
+    setInstallButton("立即更新", false);
+    if (version) setUpdateStatus("发现新版本 v" + version);
+  }
+
+  function applyUpdateProgress(progress) {
+    if (!progress || !progress.phase) return;
+    if (progress.phase === "downloading") {
+      state.desktopUpdateBusy = true;
+      els.desktopInstallUpdateBtn.hidden = false;
+      setInstallButton(progress.percent > 0 ? "正在下载 " + progress.percent + "%" : "正在下载…", true);
+      setUpdateStatus(progress.message || "正在下载更新…");
+    } else if (progress.phase === "verifying") {
+      state.desktopUpdateBusy = true;
+      setInstallButton("正在校验…", true);
+      setUpdateStatus("正在校验下载文件…");
+    } else if (progress.phase === "installing") {
+      state.desktopUpdateBusy = true;
+      setInstallButton("正在安装，应用即将重启…", true);
+      setUpdateStatus("正在安装，应用即将重启…");
+    } else if (progress.phase === "error") {
+      state.desktopUpdateBusy = false;
+      els.desktopInstallUpdateBtn.hidden = false;
+      setInstallButton("重试更新", false);
+      setUpdateStatus(progress.message || "更新失败");
+    }
+  }
+
   function applyDesktopSettings(settings) {
     if (!settings) return;
     els.autoStartToggle.checked = settings.autoStart === true;
     els.desktopVersion.textContent = settings.version ? "v" + settings.version : "";
-    if (settings.updateAvailable && settings.updateAvailable.version) {
-      setUpdateStatus("发现新版本 v" + settings.updateAvailable.version);
-    }
+    applyUpdateInfo(settings.updateAvailable);
   }
 
   function initDesktopSettings() {
     const desktop = window.casthubDesktop;
     if (!desktop) return;
     els.desktopSettingsPanel.hidden = false;
-    desktop.getSettings().then(applyDesktopSettings).catch(function () {
-      showToast("读取桌面设置失败", true);
-    });
+    desktop
+      .getSettings()
+      .then(applyDesktopSettings)
+      .catch(function () {
+        showToast("读取桌面设置失败", true);
+      });
     // 托盘菜单也能改开机自启；窗口重新获得焦点时从 config.json 刷新开关，保证双向同步。
     window.addEventListener("focus", function () {
-      desktop.getSettings().then(applyDesktopSettings).catch(function () { /* ignore */ });
+      desktop
+        .getSettings()
+        .then(applyDesktopSettings)
+        .catch(function () {
+          /* ignore */
+        });
     });
     els.autoStartToggle.addEventListener("change", function () {
       const target = els.autoStartToggle.checked;
       els.autoStartToggle.disabled = true;
-      desktop.setAutoStart(target).then(function (result) {
-        els.autoStartToggle.checked = !!(result && result.autoStart);
-        if (!result || !result.ok) {
-          showToast("设置开机自启失败: " + (result && result.error ? result.error : "未知错误"), true);
-          return;
-        }
-        showToast(result.autoStart ? "已开启开机自启" : "已关闭开机自启");
-      }).catch(function (error) {
-        els.autoStartToggle.checked = !target;
-        showToast("设置开机自启失败: " + error.message, true);
-      }).finally(function () {
-        els.autoStartToggle.disabled = false;
-      });
+      desktop
+        .setAutoStart(target)
+        .then(function (result) {
+          els.autoStartToggle.checked = !!(result && result.autoStart);
+          if (!result || !result.ok) {
+            showToast("设置开机自启失败: " + (result && result.error ? result.error : "未知错误"), true);
+            return;
+          }
+          showToast(result.autoStart ? "已开启开机自启" : "已关闭开机自启");
+        })
+        .catch(function (error) {
+          els.autoStartToggle.checked = !target;
+          showToast("设置开机自启失败: " + error.message, true);
+        })
+        .finally(function () {
+          els.autoStartToggle.disabled = false;
+        });
     });
     els.desktopCheckUpdatesBtn.addEventListener("click", function () {
       els.desktopCheckUpdatesBtn.disabled = true;
       setUpdateStatus("正在检查…");
-      desktop.checkUpdates().then(function (result) {
-        if (result && result.status === "found") setUpdateStatus("发现新版本 v" + result.latest);
-        else if (result && result.status === "latest") setUpdateStatus("已是最新版本");
-        else if (result && result.status === "skipped") setUpdateStatus("未配置更新仓库");
-        else setUpdateStatus("检查失败: " + (result && result.message ? result.message : "未知错误"));
-      }).catch(function (error) {
-        setUpdateStatus("检查失败: " + error.message);
-      }).finally(function () {
-        els.desktopCheckUpdatesBtn.disabled = false;
-      });
+      desktop
+        .checkUpdates()
+        .then(function (result) {
+          if (result && result.status === "found") {
+            applyUpdateInfo({ version: result.version || String(result.latest || "").replace(/^v/i, "") });
+          } else if (result && result.status === "latest") {
+            applyUpdateInfo(null);
+            setUpdateStatus("已是最新版本");
+          } else if (result && result.status === "skipped") {
+            applyUpdateInfo(null);
+            setUpdateStatus("未配置更新仓库");
+          } else {
+            applyUpdateInfo(null);
+            setUpdateStatus("检查失败: " + (result && result.message ? result.message : "未知错误"));
+          }
+        })
+        .catch(function (error) {
+          setUpdateStatus("检查失败: " + error.message);
+        })
+        .finally(function () {
+          els.desktopCheckUpdatesBtn.disabled = false;
+        });
+    });
+    els.desktopInstallUpdateBtn.addEventListener("click", function () {
+      if (state.desktopUpdateBusy) return;
+      state.desktopUpdateBusy = true;
+      els.desktopInstallUpdateBtn.hidden = false;
+      setInstallButton("正在准备…", true);
+      setUpdateStatus("正在准备更新…");
+      desktop
+        .installUpdate()
+        .then(function (result) {
+          if (result && result.ok) return;
+          state.desktopUpdateBusy = false;
+          els.desktopInstallUpdateBtn.hidden = false;
+          setInstallButton("重试更新", false);
+          const message = result && result.error ? result.error : "未知错误";
+          setUpdateStatus("更新失败: " + message);
+          showToast("更新失败: " + message, true);
+        })
+        .catch(function (error) {
+          state.desktopUpdateBusy = false;
+          els.desktopInstallUpdateBtn.hidden = false;
+          setInstallButton("重试更新", false);
+          setUpdateStatus("更新失败: " + error.message);
+          showToast("更新失败: " + error.message, true);
+        });
     });
     desktop.onUpdateAvailable(function (info) {
       if (info && info.version) {
-        setUpdateStatus("发现新版本 v" + info.version);
-        showToast("发现新版本 v" + info.version + "，可在托盘菜单下载");
+        applyUpdateInfo(info);
+        showToast("发现新版本 v" + info.version + "，可在桌面设置或托盘菜单立即更新");
       }
     });
+    if (typeof desktop.onUpdateProgress === "function") {
+      desktop.onUpdateProgress(applyUpdateProgress);
+    }
   }
 
   els.connectBtn.addEventListener("click", function () {
@@ -699,7 +968,11 @@
       return;
     }
     state.consoleToken = token;
-    try { localStorage.setItem("casthub-token", token); } catch (error) { /* ignore */ }
+    try {
+      localStorage.setItem("casthub-token", token);
+    } catch (error) {
+      /* ignore */
+    }
     els.authError.textContent = "";
     if (state.ws) {
       state.ws.onclose = null;

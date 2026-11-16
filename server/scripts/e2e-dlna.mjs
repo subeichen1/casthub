@@ -12,6 +12,9 @@ const SERVER_DIR = path.resolve(__dirname, "..");
 const HTTP_PORT = Number(process.env.E2E_DLNA_PORT ?? 9430);
 const CONSOLE_TOKEN = "e2e-dlna-token-2024";
 const FAKE_DEVICE_NAME = "Fake DLNA TV";
+// 本环境没有真实 ffmpeg/ffprobe：给中枢注入 fake 工具，让 auto 模式稳定走“无内嵌轨→外挂字幕”的既有断言路径。
+const FAKE_FFPROBE = path.join(SERVER_DIR, "scripts", "fake-ffprobe.mjs");
+const FAKE_FFMPEG = path.join(SERVER_DIR, "scripts", "fake-ffmpeg.mjs");
 const PROFILE_DEVICES = [
   { key: "samsung", deviceName: "Fake DLNA TV", manufacturer: "Samsung Electronics", modelName: "UN55", modelNumber: "SAMSUNG-1", ssdp: true },
   { key: "panasonic", deviceName: "Fake Panasonic TV", manufacturer: "Panasonic Corporation", modelName: "VIERA", modelNumber: "PANASONIC-1", ssdp: false },
@@ -188,6 +191,8 @@ function startHub(mediaDir, extraEnv = {}) {
       PUBLIC_BASE_URL: "",
       CONSOLE_TOKEN,
       DLNA_ALLOW_LOOPBACK: "1",
+      FFPROBE_PATH: FAKE_FFPROBE,
+      FFMPEG_PATH: FAKE_FFMPEG,
       ...extraEnv
     }
   });

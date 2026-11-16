@@ -30,7 +30,7 @@ const FORMAT_ORDER: Record<SubtitleFormat, number> = {
 
 const SUBTITLE_DIRS = ["Subs", "subtitles", "sub"] as const;
 
-const DEFAULT_PREFERRED_LANGUAGES = [
+export const DEFAULT_PREFERRED_LANGUAGES = [
   "zh",
   "zh-cn",
   "zh-hans",

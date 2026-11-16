@@ -13,6 +13,7 @@ const MODEL_NAME = process.env.FAKE_DLNA_MODEL_NAME ?? "";
 const MODEL_NUMBER = process.env.FAKE_DLNA_MODEL_NUMBER ?? "";
 const UDN = "uuid:" + randomUUID();
 const DURATION_MS = Number(process.env.FAKE_DLNA_DURATION_MS ?? 60000);
+const AUTO_STOP = process.env.FAKE_DLNA_AUTO_STOP === "1";
 const AV_TRANSPORT = "urn:schemas-upnp-org:service:AVTransport:1";
 const RENDERING_CONTROL = "urn:schemas-upnp-org:service:RenderingControl:1";
 
@@ -35,6 +36,15 @@ function currentPosition() {
   return Math.max(0, Math.min(DURATION_MS, value));
 }
 
+function settleAutoStop() {
+  if (!AUTO_STOP || transportState !== "PLAYING") return;
+  if (currentPosition() < DURATION_MS) return;
+  positionMs = DURATION_MS;
+  transportState = "STOPPED";
+  lastTick = Date.now();
+  console.log("AUTO_STOP " + DURATION_MS + "ms");
+}
+
 function formatHms(ms) {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(total / 3600);
@@ -46,7 +56,10 @@ function formatHms(ms) {
 function parseHms(value) {
   const match = /^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/.exec(String(value || "").trim());
   if (!match) return 0;
-  return Math.max(0, Math.round((Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0)) * 1000));
+  return Math.max(
+    0,
+    Math.round((Number(match[1] || 0) * 3600 + Number(match[2] || 0) * 60 + Number(match[3] || 0)) * 1000),
+  );
 }
 
 function xmlEscape(value) {
@@ -87,9 +100,15 @@ function soapResponse(action, fields, serviceType = AV_TRANSPORT) {
     '<?xml version="1.0" encoding="utf-8"?>' +
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
     's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>' +
-    '<u:' + action + 'Response xmlns:u="' + serviceType + '">' +
+    "<u:" +
+    action +
+    'Response xmlns:u="' +
+    serviceType +
+    '">' +
     inner +
-    "</u:" + action + "Response></s:Body></s:Envelope>"
+    "</u:" +
+    action +
+    "Response></s:Body></s:Envelope>"
   );
 }
 
@@ -99,8 +118,10 @@ function soapFault(message) {
     '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ' +
     's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>' +
     "<s:Fault><faultcode>s:Client</faultcode><faultstring>UPnPError</faultstring>" +
-    "<detail><UPnPError xmlns=\"urn:schemas-upnp-org:control-1-0\">" +
-    "<errorCode>501</errorCode><errorDescription>" + xmlEscape(message) + "</errorDescription>" +
+    '<detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">' +
+    "<errorCode>501</errorCode><errorDescription>" +
+    xmlEscape(message) +
+    "</errorDescription>" +
     "</UPnPError></detail></s:Fault></s:Body></s:Envelope>"
   );
 }
@@ -111,21 +132,35 @@ function deviceXml() {
     '<root xmlns="urn:schemas-upnp-org:device-1-0">' +
     "<device>" +
     "<deviceType>urn:schemas-upnp-org:device:MediaRenderer:1</deviceType>" +
-    "<friendlyName>" + xmlEscape(NAME) + "</friendlyName>" +
-    "<manufacturer>" + xmlEscape(MANUFACTURER) + "</manufacturer>" +
-    "<modelName>" + xmlEscape(MODEL_NAME) + "</modelName>" +
-    "<modelNumber>" + xmlEscape(MODEL_NUMBER) + "</modelNumber>" +
-    "<UDN>" + UDN + "</UDN>" +
+    "<friendlyName>" +
+    xmlEscape(NAME) +
+    "</friendlyName>" +
+    "<manufacturer>" +
+    xmlEscape(MANUFACTURER) +
+    "</manufacturer>" +
+    "<modelName>" +
+    xmlEscape(MODEL_NAME) +
+    "</modelName>" +
+    "<modelNumber>" +
+    xmlEscape(MODEL_NUMBER) +
+    "</modelNumber>" +
+    "<UDN>" +
+    UDN +
+    "</UDN>" +
     "<serviceList>" +
     "<service>" +
-    "<serviceType>" + AV_TRANSPORT + "</serviceType>" +
+    "<serviceType>" +
+    AV_TRANSPORT +
+    "</serviceType>" +
     "<serviceId>urn:upnp-org:serviceId:AVTransport</serviceId>" +
     "<controlURL>/control</controlURL>" +
     "<eventSubURL>/event</eventSubURL>" +
     "<SCPDURL>/scpd/avtransport.xml</SCPDURL>" +
     "</service>" +
     "<service>" +
-    "<serviceType>" + RENDERING_CONTROL + "</serviceType>" +
+    "<serviceType>" +
+    RENDERING_CONTROL +
+    "</serviceType>" +
     "<serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>" +
     "<controlURL>/control</controlURL>" +
     "<eventSubURL>/event</eventSubURL>" +
@@ -259,10 +294,20 @@ async function handleSoap(req, res) {
           const subtitleRes = await fetch(subtitleUrl);
           const subtitleBody = Buffer.from(await subtitleRes.arrayBuffer());
           console.log(
-            "SUBTITLE_GET [" + subtitleIndex + "] " + subtitleRes.status + " " +
-            (subtitleRes.headers.get("content-type") || "") + " " + subtitleBody.length + " " + subtitleUrl
+            "SUBTITLE_GET [" +
+              subtitleIndex +
+              "] " +
+              subtitleRes.status +
+              " " +
+              (subtitleRes.headers.get("content-type") || "") +
+              " " +
+              subtitleBody.length +
+              " " +
+              subtitleUrl,
           );
-          console.log("SUBTITLE_TEXT [" + subtitleIndex + "] " + JSON.stringify(subtitleBody.toString("utf8").slice(0, 500)));
+          console.log(
+            "SUBTITLE_TEXT [" + subtitleIndex + "] " + JSON.stringify(subtitleBody.toString("utf8").slice(0, 500)),
+          );
         } catch (error) {
           console.log("SUBTITLE_GET [" + subtitleIndex + "] ERROR " + error.message + " " + subtitleUrl);
         }
@@ -307,38 +352,52 @@ async function handleSoap(req, res) {
       return;
     }
     if (action === "GetTransportInfo") {
-      sendXml(res, 200, soapResponse(action, {
-        CurrentTransportState: transportState,
-        CurrentTransportStatus: "OK",
-        CurrentSpeed: "1"
-      }));
+      settleAutoStop();
+      sendXml(
+        res,
+        200,
+        soapResponse(action, {
+          CurrentTransportState: transportState,
+          CurrentTransportStatus: "OK",
+          CurrentSpeed: "1",
+        }),
+      );
       return;
     }
     if (action === "GetPositionInfo") {
-      sendXml(res, 200, soapResponse(action, {
-        Track: currentUri ? "1" : "0",
-        TrackDuration: formatHms(DURATION_MS),
-        TrackMetaData: "",
-        TrackURI: currentUri,
-        RelTime: formatHms(currentPosition()),
-        AbsTime: formatHms(currentPosition()),
-        RelCount: "0",
-        AbsCount: "0"
-      }));
+      settleAutoStop();
+      sendXml(
+        res,
+        200,
+        soapResponse(action, {
+          Track: currentUri ? "1" : "0",
+          TrackDuration: formatHms(DURATION_MS),
+          TrackMetaData: "",
+          TrackURI: currentUri,
+          RelTime: formatHms(currentPosition()),
+          AbsTime: formatHms(currentPosition()),
+          RelCount: "0",
+          AbsCount: "0",
+        }),
+      );
       return;
     }
     if (action === "GetMediaInfo") {
-      sendXml(res, 200, soapResponse(action, {
-        NrTracks: currentUri ? "1" : "0",
-        MediaDuration: formatHms(DURATION_MS),
-        CurrentURI: currentUri,
-        CurrentURIMetaData: "",
-        NextURI: "",
-        NextURIMetaData: "",
-        PlayMedium: "NETWORK",
-        RecordMedium: "NOT_IMPLEMENTED",
-        WriteStatus: "NOT_IMPLEMENTED"
-      }));
+      sendXml(
+        res,
+        200,
+        soapResponse(action, {
+          NrTracks: currentUri ? "1" : "0",
+          MediaDuration: formatHms(DURATION_MS),
+          CurrentURI: currentUri,
+          CurrentURIMetaData: "",
+          NextURI: "",
+          NextURIMetaData: "",
+          PlayMedium: "NETWORK",
+          RecordMedium: "NOT_IMPLEMENTED",
+          WriteStatus: "NOT_IMPLEMENTED",
+        }),
+      );
       return;
     }
     sendXml(res, 500, soapFault("unsupported action: " + action));
@@ -407,14 +466,18 @@ udp.on("message", (message, rinfo) => {
     "ST: urn:schemas-upnp-org:device:MediaRenderer:1",
     "USN: " + UDN + "::urn:schemas-upnp-org:device:MediaRenderer:1",
     "",
-    ""
+    "",
   ].join("\r\n");
   udp.send(Buffer.from(response), rinfo.port, rinfo.address);
 });
 
 udp.on("error", (error) => {
   console.error("SSDP_DISABLED " + error.message);
-  try { udp.close(); } catch { /* ignore */ }
+  try {
+    udp.close();
+  } catch {
+    /* ignore */
+  }
 });
 
 udp.bind(SSDP_PORT, () => {
@@ -427,7 +490,11 @@ udp.bind(SSDP_PORT, () => {
 });
 
 function shutdown() {
-  try { udp.close(); } catch { /* ignore */ }
+  try {
+    udp.close();
+  } catch {
+    /* ignore */
+  }
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 500);
 }

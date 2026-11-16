@@ -5,8 +5,23 @@ import type { FastifyInstance } from "fastify";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { DlnaService } from "./dlna";
 import type { DeviceManager } from "./devices";
-import { buildSubtitleUrl, mimeTypeOf, resolveWithinReal } from "./files";
+import {
+  buildEmbeddedMediaUrl,
+  buildEmbeddedSubtitleUrl,
+  buildSubtitleUrl,
+  mimeTypeOf,
+  resolveWithin,
+  resolveWithinReal,
+} from "./files";
+import {
+  createSubtitleStrippedVideo,
+  detectEmbeddedSubtitleTools,
+  extractEmbeddedSubtitleToSrt,
+  probeEmbeddedSubtitles,
+  selectEmbeddedSubtitleTrack,
+} from "./embedded-subtitles";
 import { findSubtitleCandidates, selectSubtitle } from "./subtitles";
+import { PlayQueue } from "./play-queue";
 import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 import type { TvStatusPayload } from "./types";
@@ -23,11 +38,27 @@ const MAX_CONNECTIONS = 32;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const MAX_AUTH_TRACKED_IPS = 1024;
 
+/** 可直接展示给控制台的业务错误（区别于内部异常）。 */
+class ConsoleActionError extends Error {}
+
+export type SubtitleMode = "auto" | "server" | "off";
+
 export interface ConsoleWsOptions {
   consoleToken: string;
   publicBaseUrl: string;
   mediaSigningKey: Buffer;
   history: HistoryRecorder;
+  /** 内嵌字幕抽取与去字幕副本缓存目录。 */
+  embeddedCacheDir: string;
+}
+
+function resolveSubtitleMode(msg: ConsolePayload): SubtitleMode | null {
+  const raw = msg.subtitleMode;
+  if (raw !== undefined) {
+    if (raw === "auto" || raw === "server" || raw === "off") return raw;
+    return null;
+  }
+  return msg.subtitles === false ? "off" : "auto";
 }
 
 function sendJson(ws: WebSocket, payload: unknown): void {
@@ -62,7 +93,7 @@ export function attachConsoleWs(
   devices: DeviceManager,
   mediaRoot: string,
   dlna: DlnaService,
-  options: ConsoleWsOptions
+  options: ConsoleWsOptions,
 ): WebSocketServer {
   const wss = new WebSocketServer({
     server: app.server,
@@ -93,10 +124,240 @@ export function attachConsoleWs(
   const broadcastHistory = (): void => broadcast({ type: "history", list: options.history.list(200) });
   const pendingSeeks = new Map<string, number>();
 
+  interface DlnaSubtitlePlan {
+    mediaUrl: string;
+    subtitleUrl: string | null;
+    warning?: string;
+  }
+
+  const externalSubtitleUrl = async (target: string, realRoot: string): Promise<string | null> => {
+    try {
+      const candidates = await findSubtitleCandidates(target, { refresh: true });
+      const selected = selectSubtitle(candidates);
+      return selected
+        ? buildSubtitleUrl(options.publicBaseUrl, realRoot, selected.path, options.mediaSigningKey)
+        : null;
+    } catch (error) {
+      // 字幕不可用不阻断视频投屏。
+      console.error(`[console] 字幕选择失败: ${(error as Error).message}`);
+      return null;
+    }
+  };
+
+  const withSubtitleFlag = (mediaUrl: string, disabled: boolean): string => {
+    if (!disabled) return mediaUrl;
+    // 旧 subtitles=false 路径已在媒体 URL 上带过一次标记，避免重复参数被解析成数组。
+    return /[?&]subtitles=0(?:&|$)/.test(mediaUrl) ? mediaUrl : `${mediaUrl}&subtitles=0`;
+  };
+
+  const prepareDlnaSubtitlePlan = async (
+    target: string,
+    mode: SubtitleMode,
+    requestedStreamIndex: number | undefined,
+    mediaUrl: string,
+    realRoot: string,
+  ): Promise<DlnaSubtitlePlan> => {
+    if (mode === "off") {
+      return { mediaUrl: withSubtitleFlag(mediaUrl, true), subtitleUrl: null };
+    }
+    if (mode === "auto") {
+      const probe = await probeEmbeddedSubtitles(target);
+      if (!probe.available) {
+        return {
+          mediaUrl: withSubtitleFlag(mediaUrl, true),
+          subtitleUrl: null,
+          warning: "无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式",
+        };
+      }
+      if (probe.tracks.length > 0) {
+        return { mediaUrl: withSubtitleFlag(mediaUrl, true), subtitleUrl: null };
+      }
+      return { mediaUrl, subtitleUrl: await externalSubtitleUrl(target, realRoot) };
+    }
+
+    const probe = await probeEmbeddedSubtitles(target);
+    if (!probe.available) {
+      throw new Error("无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式");
+    }
+    const textTracks = probe.tracks.filter((track) => track.kind === "text");
+    if (textTracks.length === 0) {
+      if (probe.tracks.some((track) => track.kind === "bitmap")) {
+        throw new Error("内嵌字幕为图片字幕，当前版本不支持服务器字幕模式");
+      }
+      return { mediaUrl, subtitleUrl: await externalSubtitleUrl(target, realRoot) };
+    }
+
+    const tools = await detectEmbeddedSubtitleTools();
+    if (!tools.ffprobe) throw new Error("无法检测内嵌字幕：ffprobe 不可用，服务器字幕模式需要 ffmpeg/ffprobe");
+    if (!tools.ffmpeg) throw new Error("服务器字幕模式需要 ffmpeg，当前不可用");
+    const selected = await selectEmbeddedSubtitleTrack(probe.tracks, { requestedStreamIndex });
+    if (!selected) throw new Error("指定的字幕轨不存在或不是文本字幕");
+
+    let extracted: Awaited<ReturnType<typeof extractEmbeddedSubtitleToSrt>>;
+    try {
+      extracted = await extractEmbeddedSubtitleToSrt(target, selected, { cacheDir: options.embeddedCacheDir });
+    } catch (error) {
+      throw new Error(`抽取内嵌字幕失败: ${(error as Error).message}`);
+    }
+    let stripped: Awaited<ReturnType<typeof createSubtitleStrippedVideo>>;
+    try {
+      stripped = await createSubtitleStrippedVideo(target, {
+        cacheDir: options.embeddedCacheDir,
+        cacheKey: path.basename(extracted.srtPath),
+      });
+    } catch (error) {
+      throw new Error(`生成去字幕副本失败: ${(error as Error).message}`);
+    }
+    return {
+      mediaUrl: buildEmbeddedMediaUrl(
+        options.publicBaseUrl,
+        options.embeddedCacheDir,
+        stripped.videoPath,
+        options.mediaSigningKey,
+      ),
+      subtitleUrl: buildEmbeddedSubtitleUrl(
+        options.publicBaseUrl,
+        options.embeddedCacheDir,
+        extracted.srtPath,
+        options.mediaSigningKey,
+      ),
+    };
+  };
+
+  interface CastToDeviceOptions {
+    resume?: boolean;
+    subtitleMode?: SubtitleMode;
+    subtitleTrack?: number;
+    notify?: (message: string) => void;
+  }
+
+  interface CastToDeviceResult {
+    target: string;
+    actualRelPath: string;
+    resumePositionMs: number | null;
+  }
+
+  /** 单文件投屏的共用实现：普通 cast 与队列自动切集都走这里，保持字幕/历史行为一致。 */
+  const castToDevice = async (
+    deviceId: string,
+    relPath: string,
+    castOptions: CastToDeviceOptions = {},
+  ): Promise<CastToDeviceResult> => {
+    const target = await resolveWithinReal(mediaRoot, relPath);
+    if (!target) throw new ConsoleActionError("路径非法");
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(target);
+    } catch {
+      throw new ConsoleActionError("文件不存在");
+    }
+    if (!stat.isFile()) throw new ConsoleActionError("只能投屏文件");
+    const realRoot = await fs.promises.realpath(mediaRoot);
+    const actualRelPath = path.relative(realRoot, target).replace(/\\/g, "/");
+    const expires = Date.now() + MEDIA_URL_TTL_MS;
+    const signature = signMediaPath(options.mediaSigningKey, actualRelPath, expires);
+    const encodedPath = actualRelPath
+      .split("/")
+      .map((part) => encodeURIComponent(part))
+      .join("/");
+    const subtitleMode = castOptions.subtitleMode ?? "auto";
+    const subtitles = subtitleMode !== "off";
+    // subtitles=false 时把标记带到 /media，让 GET/HEAD 也不返回 CaptionInfo.sec。
+    const subtitleQuery = subtitles ? "" : "&subtitles=0";
+    const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}${subtitleQuery}`;
+    const title = path.basename(target);
+    const mimeType = mimeTypeOf(target);
+    const resume = castOptions.resume !== false;
+    const resumePositionMs = resume ? validResumePosition(options.history.get(target)) : null;
+    if (devices.has(deviceId)) {
+      options.history.startPlayback(deviceId, { path: target, name: title });
+      const ok = devices.sendPlay(deviceId, url, title, mimeType);
+      if (!ok) {
+        options.history.stopPlayback(deviceId);
+        throw new ConsoleActionError("设备不在线，无法投屏");
+      }
+      if (resumePositionMs !== null) {
+        // casthub 设备沿用既有 seek：等设备上报 playing 后立刻定位。
+        pendingSeeks.set(deviceId, resumePositionMs);
+      } else {
+        pendingSeeks.delete(deviceId);
+      }
+    } else if (dlna.has(deviceId)) {
+      let subtitleTrack = castOptions.subtitleTrack;
+      if (subtitleTrack !== undefined) {
+        if (!Number.isInteger(subtitleTrack) || subtitleTrack < 0) {
+          throw new ConsoleActionError("字幕轨索引非法");
+        }
+      }
+      let plan: DlnaSubtitlePlan;
+      try {
+        plan = await prepareDlnaSubtitlePlan(target, subtitleMode, subtitleTrack, url, realRoot);
+      } catch (error) {
+        throw new ConsoleActionError((error as Error).message);
+      }
+      options.history.startPlayback(deviceId, { path: target, name: title });
+      try {
+        await dlna.play(deviceId, plan.mediaUrl, title, mimeType, resumePositionMs, plan.subtitleUrl);
+      } catch (error) {
+        options.history.stopPlayback(deviceId);
+        throw error;
+      }
+      if (plan.warning) castOptions.notify?.(plan.warning);
+    } else {
+      throw new ConsoleActionError("设备不存在");
+    }
+    return { target, actualRelPath, resumePositionMs };
+  };
+
+  const parseQueueAutoNextDelay = (): number | undefined => {
+    const raw = process.env.DLNA_AUTO_NEXT_DELAY_MS;
+    if (raw === undefined || raw.trim() === "") return undefined;
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  };
+
+  const playQueue = new PlayQueue({
+    autoNextDelayMs: parseQueueAutoNextDelay(),
+    playItem: async (deviceId, item, context) => {
+      await castToDevice(deviceId, item.path, {
+        resume: context.resume,
+        // 队列复用单文件投屏的字幕准备流程；auto 模式检测工具不可用等提示仍要浮到控制台。
+        notify: (message) => broadcast({ type: "error", message }),
+      });
+      console.log(`[queue] 播放 ${item.name} -> ${deviceId}${context.auto ? "（自动连播）" : ""}`);
+    },
+    stopPlayback: async (deviceId) => {
+      await dlna.control(deviceId, "stop");
+    },
+    broadcast: (view) => broadcast({ type: "queue", deviceId: view.deviceId, queue: view }),
+    onError: (_deviceId, message) => broadcast({ type: "error", message }),
+  });
+
+  /** 队列加入前校验：路径必须位于媒体库内、是存在的视频文件。 */
+  const resolveQueueVideo = async (relPath: string): Promise<{ path: string; name: string }> => {
+    const lexical = resolveWithin(mediaRoot, relPath);
+    if (!lexical) throw new ConsoleActionError("路径非法");
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(lexical);
+    } catch {
+      throw new ConsoleActionError("文件不存在");
+    }
+    const target = await resolveWithinReal(mediaRoot, relPath);
+    if (!target) throw new ConsoleActionError("路径非法");
+    if (!stat.isFile()) throw new ConsoleActionError("只能把视频加入队列");
+    if (!mimeTypeOf(target).startsWith("video/")) throw new ConsoleActionError("只能把视频加入队列");
+    const realRoot = await fs.promises.realpath(mediaRoot);
+    const actualRelPath = path.relative(realRoot, target).replace(/\\/g, "/");
+    if (!actualRelPath || actualRelPath.startsWith("../")) throw new ConsoleActionError("路径非法");
+    return { path: actualRelPath, name: path.basename(target) };
+  };
+
   const handleTvStatus = (deviceId: string, status: TvStatusPayload): void => {
     const update = options.history.record(deviceId, status);
     if (update) broadcastHistory();
     broadcast({ type: "tvStatus", deviceId, ...status });
+    playQueue.handleTvStatus(deviceId, status);
     if (status.state === "playing") {
       const seekPositionMs = pendingSeeks.get(deviceId);
       if (seekPositionMs !== undefined) {
@@ -118,6 +379,7 @@ export function attachConsoleWs(
   dlna.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
   dlna.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
   dlna.onDeviceRemoved = (deviceId) => options.history.forgetDevice(deviceId);
+  dlna.onPlaybackEnded = (deviceId) => playQueue.handlePlaybackEnded(deviceId);
 
   wss.on("connection", (ws, req) => {
     if (wss.clients.size > MAX_CONNECTIONS) {
@@ -171,6 +433,7 @@ export function attachConsoleWs(
 
     sendJson(ws, { type: "devices", list: allDevices() });
     sendJson(ws, { type: "history", list: options.history.list(200) });
+    for (const view of playQueue.list()) sendJson(ws, { type: "queue", deviceId: view.deviceId, queue: view });
 
     ws.on("message", async (data) => {
       if (rawDataLength(data) > MAX_MESSAGE_BYTES) {
@@ -254,80 +517,115 @@ export function attachConsoleWs(
             console.log(`[console] 清空播放历史 ${removed} 条`);
             break;
           }
+          case "queueAdd": {
+            const deviceId = String(msg.deviceId ?? "");
+            if (!dlna.has(deviceId)) {
+              sendJson(ws, {
+                type: "error",
+                message: devices.has(deviceId) ? "队列功能暂只支持 DLNA" : "设备不存在",
+              });
+              break;
+            }
+            try {
+              const item = await resolveQueueVideo(String(msg.path ?? ""));
+              const before = playQueue.get(deviceId);
+              const wasEmpty = !before || before.items.length === 0;
+              playQueue.add(deviceId, item);
+              const current = playQueue.get(deviceId);
+              if (wasEmpty && current && current.state === "idle" && current.currentIndex === -1) {
+                await playQueue.play(deviceId);
+              }
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
+            }
+            break;
+          }
+          case "queuePlay": {
+            const deviceId = String(msg.deviceId ?? "");
+            if (!dlna.has(deviceId)) {
+              sendJson(ws, {
+                type: "error",
+                message: devices.has(deviceId) ? "队列功能暂只支持 DLNA" : "设备不存在",
+              });
+              break;
+            }
+            try {
+              await playQueue.play(deviceId);
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
+            }
+            break;
+          }
+          case "queueRemove": {
+            const deviceId = String(msg.deviceId ?? "");
+            if (!dlna.has(deviceId)) {
+              sendJson(ws, {
+                type: "error",
+                message: devices.has(deviceId) ? "队列功能暂只支持 DLNA" : "设备不存在",
+              });
+              break;
+            }
+            try {
+              playQueue.remove(deviceId, Number(msg.index));
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
+            }
+            break;
+          }
+          case "queueClear": {
+            const deviceId = String(msg.deviceId ?? "");
+            if (!dlna.has(deviceId)) {
+              sendJson(ws, {
+                type: "error",
+                message: devices.has(deviceId) ? "队列功能暂只支持 DLNA" : "设备不存在",
+              });
+              break;
+            }
+            await playQueue.clear(deviceId, { stopPlayback: true });
+            break;
+          }
           case "cast": {
             const deviceId = String(msg.deviceId ?? "");
             const relPath = String(msg.path ?? "");
-            const target = await resolveWithinReal(mediaRoot, relPath);
-            if (!target) {
-              sendJson(ws, { type: "error", message: "路径非法" });
-              return;
+            // 普通“投屏/从头”是单文件操作：先清空该 DLNA 设备的旧队列，避免后台继续跳。
+            if (dlna.has(deviceId) && (playQueue.get(deviceId)?.items.length ?? 0) > 0) {
+              await playQueue.clear(deviceId, { stopPlayback: false });
             }
-            let stat: fs.Stats;
+            let subtitleMode: SubtitleMode | undefined;
+            let subtitleTrack: number | undefined;
+            if (!devices.has(deviceId)) {
+              const mode = resolveSubtitleMode(msg);
+              if (!mode) {
+                sendJson(ws, { type: "error", message: "未知字幕模式" });
+                break;
+              }
+              subtitleMode = mode;
+              if (msg.subtitleTrack !== undefined) {
+                const parsed = Number(msg.subtitleTrack);
+                if (!Number.isInteger(parsed) || parsed < 0) {
+                  sendJson(ws, { type: "error", message: "字幕轨索引非法" });
+                  break;
+                }
+                subtitleTrack = parsed;
+              }
+            }
             try {
-              stat = await fs.promises.stat(target);
-            } catch {
-              sendJson(ws, { type: "error", message: "文件不存在" });
-              return;
-            }
-            if (!stat.isFile()) {
-              sendJson(ws, { type: "error", message: "只能投屏文件" });
-              return;
-            }
-            const realRoot = await fs.promises.realpath(mediaRoot);
-            const actualRelPath = path.relative(realRoot, target).replace(/\\/g, "/");
-            const expires = Date.now() + MEDIA_URL_TTL_MS;
-            const signature = signMediaPath(options.mediaSigningKey, actualRelPath, expires);
-            const encodedPath = actualRelPath.split("/").map((part) => encodeURIComponent(part)).join("/");
-            const subtitles = msg.subtitles !== false;
-            // subtitles=false 时把标记带到 /media，让 GET/HEAD 也不返回 CaptionInfo.sec。
-            const subtitleQuery = subtitles ? "" : "&subtitles=0";
-            const url = `${options.publicBaseUrl}/media/${encodedPath}?expires=${expires}&sig=${encodeURIComponent(signature)}${subtitleQuery}`;
-            const title = path.basename(target);
-            const mimeType = mimeTypeOf(target);
-            let subtitleUrl: string | null = null;
-            if (subtitles) {
-              try {
-                const candidates = await findSubtitleCandidates(target, { refresh: true });
-                const selected = selectSubtitle(candidates);
-                subtitleUrl = selected
-                  ? buildSubtitleUrl(options.publicBaseUrl, realRoot, selected.path, options.mediaSigningKey)
-                  : null;
-              } catch (error) {
-                // 字幕不可用不阻断视频投屏。
-                console.error(`[console] 字幕选择失败: ${(error as Error).message}`);
+              const result = await castToDevice(deviceId, relPath, {
+                resume: msg.resume !== false,
+                ...(subtitleMode ? { subtitleMode } : {}),
+                ...(subtitleTrack !== undefined ? { subtitleTrack } : {}),
+                notify: (message) => sendJson(ws, { type: "error", message }),
+              });
+              console.log(
+                `[console] 投屏 ${result.actualRelPath} -> ${deviceId}${result.resumePositionMs !== null ? `（续播 ${result.resumePositionMs}ms）` : ""}`,
+              );
+            } catch (error) {
+              if (error instanceof ConsoleActionError) {
+                sendJson(ws, { type: "error", message: error.message });
+                break;
               }
+              throw error;
             }
-            const resume = msg.resume !== false;
-            const resumePositionMs = resume ? validResumePosition(options.history.get(target)) : null;
-            if (devices.has(deviceId)) {
-              options.history.startPlayback(deviceId, { path: target, name: title });
-              const ok = devices.sendPlay(deviceId, url, title, mimeType);
-              if (!ok) {
-                options.history.stopPlayback(deviceId);
-                sendJson(ws, { type: "error", message: "设备不在线，无法投屏" });
-                return;
-              }
-              if (resumePositionMs !== null) {
-                // casthub 设备沿用既有 seek：等设备上报 playing 后立刻定位。
-                pendingSeeks.set(deviceId, resumePositionMs);
-              } else {
-                pendingSeeks.delete(deviceId);
-              }
-            } else if (dlna.has(deviceId)) {
-              options.history.startPlayback(deviceId, { path: target, name: title });
-              try {
-                await dlna.play(deviceId, url, title, mimeType, resumePositionMs, subtitleUrl);
-              } catch (error) {
-                options.history.stopPlayback(deviceId);
-                throw error;
-              }
-            } else {
-              sendJson(ws, { type: "error", message: "设备不存在" });
-              return;
-            }
-            console.log(
-              `[console] 投屏 ${actualRelPath} -> ${deviceId}${resumePositionMs !== null ? `（续播 ${resumePositionMs}ms）` : ""}`
-            );
             break;
           }
           case "control": {
@@ -339,6 +637,8 @@ export function attachConsoleWs(
             }
             const positionMs = msg.positionMs === undefined ? undefined : Number(msg.positionMs);
             const value = msg.value === undefined ? undefined : Number(msg.value);
+            // 手动停止不得触发自动下一项；直到下一次显式 play/queuePlay 才恢复。
+            if (action === "stop") playQueue.suppressAutoNext(deviceId);
             if (devices.has(deviceId)) {
               if (action === "volume") {
                 sendJson(ws, { type: "error", message: "casthub 设备不支持音量控制" });
@@ -352,12 +652,12 @@ export function attachConsoleWs(
                   deviceId,
                   action as "pause" | "resume" | "stop" | "seek" | "volume",
                   positionMs,
-                  value
+                  value,
                 );
                 if (!ok) {
                   sendJson(ws, {
                     type: "error",
-                    message: action === "volume" ? "音量控制失败（设备可能不支持）" : "设备不在线或参数错误"
+                    message: action === "volume" ? "音量控制失败（设备可能不支持）" : "设备不在线或参数错误",
                   });
                 }
               } catch (error) {
@@ -374,8 +674,12 @@ export function attachConsoleWs(
             sendJson(ws, { type: "error", message: `未知消息类型: ${String(msg.type)}` });
         }
       } catch (error) {
-        console.error("[console-ws] 处理消息失败:", error);
-        sendJson(ws, { type: "error", message: "操作失败" });
+        if (error instanceof ConsoleActionError) {
+          sendJson(ws, { type: "error", message: error.message });
+        } else {
+          console.error("[console-ws] 处理消息失败:", error);
+          sendJson(ws, { type: "error", message: "操作失败" });
+        }
       }
     });
 

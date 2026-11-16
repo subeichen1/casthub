@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.2.0**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.2.1**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -229,7 +229,7 @@ Windows 电脑直接双击 `CastHub.exe` 即可启动，免安装、可放 U 盘
 2. Windows 防火墙弹窗（进程名 `CastHub.exe`）必须点「允许访问」，否则电视端无法拉取视频流。
 3. 运行日志写在 exe 所在目录的 `casthub.log`，排查问题时请一并提供。
 4. 需要指定媒体目录或公网地址时，在 exe 同目录创建 `config.json`；环境变量优先级最高。
-5. **关闭窗口（右上角 ×）不会退出 CastHub，而是隐藏到系统托盘**；需要彻底退出时，右键任务栏托盘区的 CastHub 图标（蓝色 C）选择「退出」。托盘菜单还可以「显示 CastHub」、勾选「开机自启」、手动「检查更新」；发现新版本时会显示「下载新版本…」。
+5. **关闭窗口（右上角 ×）不会退出 CastHub，而是隐藏到系统托盘**；需要彻底退出时，右键任务栏托盘区的 CastHub 图标（蓝色 C）选择「退出」。托盘菜单还可以「显示 CastHub」、勾选「开机自启」、手动「检查更新」；发现新版本时会显示「立即更新…」。
 
 ### 开机自启
 
@@ -237,9 +237,21 @@ Windows 电脑直接双击 `CastHub.exe` 即可启动，免安装、可放 U 盘
 
 portable 版请慎开：启动项指向 exe 当前路径，移动或删除 exe（例如 U 盘拔走后）启动项会失效；需要时把 exe 放回原路径，或重新打开 CastHub 重新勾选。
 
-### 检查更新
+### 自动更新（Windows portable）
 
-CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。默认未配置 `desktop.updateRepo`，此时只写日志 `UPDATE_CHECK_SKIPPED`，不发起网络请求。配置 GitHub 仓库 `owner/repo`（或完整 Releases API URL）后，程序读取 `releases/latest`，将 `tag_name` 与当前版本做三段数值比较；发现新版本会发系统通知，并在托盘菜单增加「下载新版本…」，点击后用默认浏览器打开 `html_url`。本项目是未签名 portable 版，不做静默更新，请从 Releases 页手动下载新 exe 替换。
+CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。内置默认更新仓库为 `subeichen1/casthub`，所有用户无需额外配置即可检查 GitHub Releases；程序读取 `releases/latest`，将 `tag_name` 与当前三段版本号比较，发现新版本会发系统通知，并在桌面设置面板和托盘菜单显示「立即更新」。
+
+点击「立即更新」后，桌面设置面板会依次显示下载进度「正在下载 42%」、校验状态「正在校验…」和安装状态「正在安装，应用即将重启…」。整个流程不打开浏览器、不跳转 GitHub 页面，也不需要手动下载或替换文件。程序只使用 GitHub Release `assets` 里的 `CastHub.exe` 与 `checksums.txt`，强制核对 `CastHub.exe` 的 SHA-256；缺少任一资产、下载失败或哈希不匹配都会中止更新并保留现有 exe。更新 helper 会等待旧进程退出，并在外层 portable 进程释放文件锁后重试替换，再把新版本启动起来。
+
+> **旧版本限制**：v0.2.0 及更早版本没有自动更新器，第一次必须从 Releases 页面手动下载并安装 v0.2.1 或更高版本；从包含自动更新器的版本开始，之后才能在应用内一键更新。
+
+注意事项：
+
+- 更新目标目录必须可写；把 `CastHub.exe` 放在 `Program Files` 等受保护目录时，Windows 可能拒绝替换，程序会提示「更新目标目录不可写」。
+- helper 使用 Windows 自带的 `powershell.exe`（PowerShell 5.1 即可），不依赖 PowerShell 7。
+- Release 必须同时提供 `CastHub.exe` 和 `checksums.txt`，且 `checksums.txt` 包含 `CastHub.exe` 的 SHA-256；否则检查更新会返回明确错误。
+- 如需额外校验 Authenticode 签名者，可在 `config.json` 的 `desktop.updateSignerSubject` 填写证书 Subject（支持 `*` 通配，例如 `CN=CastHub Development*`）。不配置时仍强制校验 SHA-256，只跳过签名者匹配。
+- 如需改用其他 GitHub 仓库，可在 `config.json` 中覆盖 `desktop.updateRepo`；更新资产地址始终来自该仓库 `releases/latest` 返回的 `assets`，且必须是 HTTPS。
 
 ```json
 {
@@ -247,7 +259,8 @@ CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可�
   "publicBaseUrl": "http://192.168.1.5:9420",
   "desktop": {
     "autoStart": false,
-    "updateRepo": "subeichen1/casthub"
+    "updateRepo": "subeichen1/casthub",
+    "updateSignerSubject": "CN=CastHub Development*"
   }
 }
 ```
@@ -304,7 +317,7 @@ tv-app/app/build/outputs/apk/release/app-release.apk
 
 ### 限制清单
 
-- **字幕是厂商扩展，尽力而为**：DLNA 没有统一的字幕协议。中枢会扫描视频同目录及 `Subs/`、`subtitles/`、`sub/` 一级子目录中的字幕文件，按精确同名、语言后缀、格式顺序选出一条，再按电视品牌使用不同扩展写入 DIDL-Lite（见下方「字幕格式与厂商 profile」）。不同品牌、型号的识别率差异很大，不保证一定能显示。Sony 官方支持文档明确写「DLNA 服务器不支持 srt 字幕显示」，这类电视请改用主路线 CastHub App（字幕处理见「字幕」相关章节）。所有字幕会统一转成 UTF-8 srt，`Content-Type` 为 `application/x-subrip; charset=utf-8`；个别电视只认 `text/plain` 时，可把 `server/src/files.ts` 的 `MIME_TYPES` 中 `.srt` 值改成 `text/plain` 后重启中枢（默认不建议，因为会影响主路线）。
+- **字幕是厂商扩展，尽力而为**：DLNA 没有统一的字幕协议。中枢会先按「内嵌字幕与三种字幕模式」处理内嵌字幕，需要外挂时扫描视频同目录及 `Subs/`、`subtitles/`、`sub/` 一级子目录中的字幕文件，按精确同名、语言后缀、格式顺序选出一条，再按电视品牌使用不同扩展写入 DIDL-Lite（见下方「字幕格式与厂商 profile」）。不同品牌、型号的识别率差异很大，不保证一定能显示。Sony 官方支持文档明确写「DLNA 服务器不支持 srt 字幕显示」，这类电视请改用主路线 CastHub App（字幕处理见「字幕」相关章节）。所有外挂字幕会统一转成 UTF-8 srt，`Content-Type` 为 `application/x-subrip; charset=utf-8`；个别电视只认 `text/plain` 时，可把 `server/src/files.ts` 的 `MIME_TYPES` 中 `.srt` 值改成 `text/plain` 后重启中枢（默认不建议，因为会影响主路线）。
 - **音量控制**：支持 UPnP RenderingControl 的电视可在控制台调节 0-100 音量（发现后每 2 秒同步一次）；电视不支持或未提供 RenderingControl 时滑条禁用并提示，不影响播放控制。
 - **拖动精度受电视影响**：进度条 seek 会转成电视的 AVTransport Seek，实际落点和响应速度由电视实现决定。
 - **断点续播**：已支持；中枢在 Play 后等待 1 秒再发 Seek，实际落点与响应速度由电视实现决定。
@@ -323,7 +336,25 @@ tv-app/app/build/outputs/apk/release/app-release.apk
 | Generic | 其他厂商（含未知） | 同 LG：一个 `text/srt` 额外 `<res>` |
 | Sony | manufacturer 含 `sony` | 不输出任何字幕标记（仅日志提示不支持） |
 
-Samsung 场景还会在 `/media` 的 GET/HEAD 响应加 `CaptionInfo.sec: <完整URL>`；`subtitles=false` 时 DIDL 与响应头均不出现字幕。字幕 URL 指向 `/api/subtitle`，服务端在内部完成格式解码和 SRT 规范化。
+Samsung 场景还会在 `/media` 的 GET/HEAD 响应加 `CaptionInfo.sec: <完整URL>`；`subtitles=0` 时 DIDL 与响应头均不出现字幕。外挂字幕 URL 指向 `/api/subtitle`，服务端在内部完成格式解码和 SRT 规范化。
+
+### 内嵌字幕与三种字幕模式
+
+控制台 DLNA 选项提供三种模式（默认 `auto`，仅 DLNA 设备使用）：
+
+- **自动（电视优先，`auto`）**：先探测视频内嵌字幕。存在任意内嵌字幕轨时，媒体 URL 带 `subtitles=0` 并让电视直接读取内嵌字幕，不再发外挂字幕，避免电视内嵌字幕和服务器外挂字幕叠成两层；没有内嵌字幕轨时才回退到同目录外挂字幕。若 ffprobe 不可用，中枢会提示「无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式」，此时不发送外挂字幕，但视频仍可播放。
+- **服务器字幕（`server`）**：中枢用 ffprobe 选择一条文本内嵌字幕（优先 default 非 forced、语言偏好、其他非 forced，最后 forced），用 ffmpeg 抽取 UTF-8 SRT，并生成仅含视频/音频、不重编码的去字幕副本；媒体 URL 指向副本，字幕 URL 指向 SRT。首次抽取或生成副本会等待，之后复用缓存。图片字幕（PGS/VobSub 等）不支持服务器模式，会明确报错且不投屏；无内嵌字幕轨时回退外挂字幕。服务器模式需要 ffmpeg 与 ffprobe，缺失时明确报错，不会降级为外挂。
+- **关闭（`off`）**：不发送任何字幕，媒体 URL 带 `subtitles=0`。
+
+工具路径通过环境变量 `FFPROBE_PATH`（默认 `ffprobe`）与 `FFMPEG_PATH`（默认 `ffmpeg`）配置；启动日志会打印可用性。探测支持常见文本字幕编码（srt/subrip、ass/ssa、mov_text、webvtt 等）；硬字幕烧录在画面里，无法检测也无法关闭。内嵌字幕缓存位于 `data/cache/embedded-subtitles`（7 天未使用自动清理，不删正在生成的文件），首次服务器模式抽取会占用额外磁盘与时间。DLNA 电视对字幕的识别仍取决于厂商实现，不保证显示。
+
+### 播放队列与自动连播（仅 DLNA）
+
+选中 DLNA 设备后，媒体库的每个视频行会出现「加入队列」按钮。队列为空时，第一次加入会作为第 1 项立即开始播放；队列已有内容时，新视频只追加到队尾，不打断当前播放，点击顺序就是播放顺序。右侧「播放队列」面板显示序号、文件名、当前项高亮以及「正在播放 2/5」等状态，提供「开始播放/继续队列」「移除」「清空」操作；当前播放项不允许移除，需先停止，清空时若正在播放会先停止再清空。
+
+自动连播完全由服务器执行，不依赖 PC 页面是否打开；PC 刷新或断开后队列继续播放。当前项自然结束后等待 `DLNA_AUTO_NEXT_DELAY_MS`（默认 1500ms，须为正整数，非法值按默认处理）自动播放下一项；最后一项结束后队列显示「队列已完成」，停在最后一项，不循环、不重复投最后一项。手动停止只停止当前播放并把队列置为暂停，保留队列，不会自动跳下一项；再次点「开始播放/继续队列」从当前项从头播放（第一项首次开始仍可沿用既有断点续播逻辑）。
+
+普通「投屏/从头」是单文件操作：如果该 DLNA 设备已有队列，会先清空队列再按原逻辑投屏，避免旧队列在后台继续跳。队列只保存在服务器进程内存中，服务重启后清空；队列项只保存媒体库相对路径和显示名，真正播放时才生成签名 URL。队列内每一项都独立走现有的 DLNA 字幕准备流程，仍然保证任何时刻最多只向电视输出一条字幕。
 
 ### 设备如何出现
 
@@ -353,6 +384,10 @@ npm run e2e          # fake-tv + 中枢，完整 App 投屏流程
 node scripts/e2e-history.mjs # 播放历史 + 重启后续播流程
 node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subtitle + /media
+node --import tsx scripts/e2e-embedded-subtitles.mjs # 内嵌字幕三模式 + 缓存路由 + DLNA DIDL
+npm run e2e-queue   # DLNA 播放队列 + 自动连播 + 停止/清空
+npm run e2e-security # 安全边界与历史存储恢复
+npm run test:updater # 桌面自动更新器单元测试
 ```
 
 单独运行电视模拟器：
@@ -370,7 +405,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和四条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和五条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 

@@ -118,6 +118,16 @@
     .history-meta { color: var(--muted); font-size: 11px; margin-top: 4px; }
     .history-actions { display: flex; gap: 6px; margin-top: 8px; }
     .history-actions button { flex: 1; padding: 5px 8px; font-size: 12px; }
+    .queue-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+    .queue-item { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 1px solid var(--line); background: var(--panel-2); border-radius: 9px; padding: 8px 9px; }
+    .queue-item.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue) inset; }
+    .queue-index { color: var(--muted); font-size: 12px; text-align: right; }
+    .queue-name { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .queue-item button { padding: 4px 7px; font-size: 11px; }
+    .queue-status { color: var(--cyan); font-size: 12px; margin-bottom: 8px; }
+    .queue-actions { display: flex; gap: 8px; margin-top: 10px; }
+    .queue-actions button { flex: 1; }
+    .file-actions { flex-wrap: wrap; }
     .player-title { font-size: 14px; color: var(--cyan); margin-bottom: 8px; min-height: 20px; }
     .state-badge {
       display: inline-block;
@@ -280,6 +290,7 @@
       </div>
       <div class="desktop-settings-actions">
         <button id="desktopCheckUpdatesBtn" class="secondary small">检查更新</button>
+        <button id="desktopInstallUpdateBtn" class="secondary small" hidden>立即更新</button>
         <span id="updateStatus" class="hint" style="margin-top:0"></span>
       </div>
       <div class="hint">仅桌面版显示。portable 版开启自启后请勿移动 exe，移动后启动项会失效。</div>
@@ -295,6 +306,7 @@
       <button id="loadMoreBtn" class="secondary small" hidden style="margin-top:10px">加载更多</button>
     </section>
 
+    <div class="column">
     <section class="panel">
       <h2>播放控制</h2>
       <div id="playerTitle" class="player-title">未在播放</div>
@@ -313,11 +325,28 @@
         <div id="volumeHint" class="hint" hidden>该设备不支持音量控制</div>
       </div>
       <div id="dlnaOptions" class="dlna-options" hidden>
-        <label><input id="dlnaSubtitles" type="checkbox" checked /> 字幕（尽力而为）</label>
-        <div class="hint">DLNA 字幕为厂商扩展，部分电视可能不显示；不支持时请使用主路线 App。</div>
+        <label>字幕模式
+          <select id="dlnaSubtitleMode">
+            <option value="auto" selected>自动（电视优先）</option>
+            <option value="server">服务器字幕（需 ffmpeg）</option>
+            <option value="off">关闭</option>
+          </select>
+        </label>
+        <div class="hint">自动：电视可读内嵌字幕时直接显示，避免再发外挂造成双层。服务器模式首次需用 ffmpeg 抽取文本字幕并生成去字幕副本，可能等待；图片字幕（PGS/VobSub）不支持服务器模式，硬字幕无法检测。DLNA 字幕支持因厂商而异，不保证显示。</div>
       </div>
       <div class="hint">拖进度条松开后发送 seek；遥控器确认键也可播放/暂停，左右键 ±10 秒。</div>
     </section>
+    <section class="panel" id="queuePanel">
+      <h2 id="queueTitle">播放队列（0）</h2>
+      <div id="queueStatus" class="queue-status">队列为空</div>
+      <div id="queueList" class="queue-list"></div>
+      <div class="queue-actions">
+        <button id="queuePlayBtn" disabled>开始播放</button>
+        <button id="queueClearBtn" class="secondary" disabled>清空</button>
+      </div>
+      <div class="hint">仅 DLNA 设备支持排队；自动连播由服务器执行，关闭或刷新页面不影响。</div>
+    </section>
+    </div>
   </main>
 
   <div id="toast"></div>

@@ -44,7 +44,9 @@ interface SubtitleProfileHints {
 }
 
 function normalizeProfileHint(value: unknown): string {
-  return String(value ?? "").trim().toLowerCase();
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
 }
 
 function profileFromText(value: string): SubtitleProfile | null {
@@ -149,7 +151,7 @@ function parseSsdpResponse(text: string): SsdpResponse {
   return {
     location: headers.get("location"),
     st: headers.get("st"),
-    usn: headers.get("usn")
+    usn: headers.get("usn"),
   };
 }
 
@@ -179,7 +181,7 @@ export function buildDidl(
   title: string,
   mimeType: string,
   subtitleUrl: string | null,
-  profile: SubtitleProfile
+  profile: SubtitleProfile,
 ): string {
   const hasSubtitle = Boolean(subtitleUrl) && profile !== "sony";
   if (subtitleUrl && profile === "sony") {
@@ -270,7 +272,7 @@ function isPrivateAddress(address: string, allowCgnat = false): boolean {
     const ranges: Array<[number, number]> = [
       [ipv4ToInt("10.0.0.0")!, ipv4ToInt("10.255.255.255")!],
       [ipv4ToInt("172.16.0.0")!, ipv4ToInt("172.31.255.255")!],
-      [ipv4ToInt("192.168.0.0")!, ipv4ToInt("192.168.255.255")!]
+      [ipv4ToInt("192.168.0.0")!, ipv4ToInt("192.168.255.255")!],
     ];
     if (ranges.some(([start, end]) => value >= start && value <= end)) return true;
     // CGNAT/Tailscale 兼容必须显式开启；即使开启也排除云厂商元数据地址。
@@ -406,8 +408,8 @@ function ssdpSearch(st: string, allowLoopback: boolean, allowCgnat = false): Pro
           "MX: 3",
           `ST: ${st}`,
           "",
-          ""
-        ].join("\r\n")
+          "",
+        ].join("\r\n"),
       );
       const addresses = ssdpInterfaceAddresses(allowLoopback, allowCgnat);
       const targets: Array<string | null> = addresses.length > 0 ? addresses : [null];
@@ -440,7 +442,12 @@ function ssdpSearch(st: string, allowLoopback: boolean, allowCgnat = false): Pro
 }
 
 function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo | null {
-  const parser = new XMLParser({ ignoreAttributes: true, removeNSPrefix: true, trimValues: true, processEntities: false });
+  const parser = new XMLParser({
+    ignoreAttributes: true,
+    removeNSPrefix: true,
+    trimValues: true,
+    processEntities: false,
+  });
   let parsed: unknown;
   try {
     parsed = parser.parse(xml);
@@ -449,14 +456,16 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
   }
   const root = asRecord(asRecord(parsed).root);
   const device = asRecord(root.device);
-  const udn = String(device.UDN ?? "").trim().slice(0, 256);
+  const udn = String(device.UDN ?? "")
+    .trim()
+    .slice(0, 256);
   if (!udn) return null;
   const services = asArray(asRecord(device.serviceList).service).map(asRecord);
-  const avTransport = services.find((service) =>
-    String(service.serviceType ?? "").includes(":service:AVTransport:")
-  );
+  const avTransport = services.find((service) => String(service.serviceType ?? "").includes(":service:AVTransport:"));
   if (!avTransport) return null;
-  const controlRaw = String(avTransport.controlURL ?? "").trim().slice(0, 2048);
+  const controlRaw = String(avTransport.controlURL ?? "")
+    .trim()
+    .slice(0, 2048);
   if (!controlRaw) return null;
   let controlURL: string;
   try {
@@ -466,11 +475,13 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
   }
   // RenderingControl 与 AVTransport 是两个独立服务、两个 controlURL，不能复用。
   const renderingControl = services.find((service) =>
-    String(service.serviceType ?? "").includes(":service:RenderingControl:")
+    String(service.serviceType ?? "").includes(":service:RenderingControl:"),
   );
   let renderingControlURL: string | null = null;
   if (renderingControl) {
-    const renderingRaw = String(renderingControl.controlURL ?? "").trim().slice(0, 2048);
+    const renderingRaw = String(renderingControl.controlURL ?? "")
+      .trim()
+      .slice(0, 2048);
     if (renderingRaw) {
       try {
         renderingControlURL = new URL(renderingRaw, location).toString();
@@ -479,17 +490,26 @@ function parseDeviceDescription(xml: string, location: string): DlnaDeviceInfo |
       }
     }
   }
-  const deviceName = String(device.friendlyName ?? "DLNA 电视").trim().slice(0, 64) || "DLNA 电视";
-  const manufacturer = String(device.manufacturer ?? "").trim().slice(0, 256);
-  const modelName = String(device.modelName ?? "").trim().slice(0, 256);
-  const modelNumber = String(device.modelNumber ?? "").trim().slice(0, 256);
+  const deviceName =
+    String(device.friendlyName ?? "DLNA 电视")
+      .trim()
+      .slice(0, 64) || "DLNA 电视";
+  const manufacturer = String(device.manufacturer ?? "")
+    .trim()
+    .slice(0, 256);
+  const modelName = String(device.modelName ?? "")
+    .trim()
+    .slice(0, 256);
+  const modelNumber = String(device.modelNumber ?? "")
+    .trim()
+    .slice(0, 256);
   return {
     id: udn,
     deviceName,
     address: location,
     controlURL,
     renderingControlURL,
-    subtitleProfile: detectSubtitleProfile({ manufacturer, modelName, modelNumber, friendlyName: deviceName })
+    subtitleProfile: detectSubtitleProfile({ manufacturer, modelName, modelNumber, friendlyName: deviceName }),
   };
 }
 
@@ -508,6 +528,8 @@ export class DlnaService {
   onTvStatus: ((deviceId: string, status: TvStatusPayload) => void) | null = null;
   onDeviceError: ((deviceId: string, message: string) => void) | null = null;
   onDeviceRemoved: ((deviceId: string) => void) | null = null;
+  /** 自然播放结束（上次 playing → 本次 idle 且位置达到 95%）时回调一次。 */
+  onPlaybackEnded: ((deviceId: string) => void) | null = null;
 
   constructor(options: { allowLoopback?: boolean; allowCgnat?: boolean } = {}) {
     this.allowLoopback = options.allowLoopback ?? process.env.DLNA_ALLOW_LOOPBACK === "1";
@@ -521,7 +543,7 @@ export class DlnaService {
       online: runtime.online,
       type: "dlna" as const,
       deviceName: runtime.info.deviceName,
-      volume: runtime.volume
+      volume: runtime.volume,
     }));
   }
 
@@ -591,7 +613,7 @@ export class DlnaService {
 
       const responses = await Promise.all([
         ssdpSearch(MEDIA_RENDERER, this.allowLoopback, this.allowCgnat),
-        ssdpSearch("ssdp:all", this.allowLoopback, this.allowCgnat)
+        ssdpSearch("ssdp:all", this.allowLoopback, this.allowCgnat),
       ]);
       const locations = Array.from(new Set(responses.flat())).slice(0, MAX_SSDP_LOCATIONS);
       for (const location of locations) {
@@ -619,7 +641,7 @@ export class DlnaService {
     title: string,
     mimeType: string,
     resumePositionMs?: number | null,
-    subtitleUrl?: string | null
+    subtitleUrl?: string | null,
   ): Promise<void> {
     if (this.disposed) throw new Error("DLNA 服务已关闭");
     const runtime = this.devices.get(id);
@@ -642,7 +664,7 @@ export class DlnaService {
       "SetAVTransportURI",
       "<InstanceID>0</InstanceID>" +
         `<CurrentURI>${escapeXml(url)}</CurrentURI>` +
-        `<CurrentURIMetaData>${escapeXml(didl)}</CurrentURIMetaData>`
+        `<CurrentURIMetaData>${escapeXml(didl)}</CurrentURIMetaData>`,
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     await this.soap(runtime, "Play", "<InstanceID>0</InstanceID><Speed>1</Speed>");
@@ -652,8 +674,9 @@ export class DlnaService {
     runtime.lastStatus = {
       state: "buffering",
       positionMs: 0,
-      durationMs: runtime.lastStatus?.durationMs ?? 0,
-      volume: runtime.volume
+      // 切集时绝不能沿用上一条视频的时长，否则旧 STOPPED 会被误判为自然结束。
+      durationMs: 0,
+      volume: runtime.volume,
     };
     this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     this.startPolling(runtime);
@@ -675,7 +698,7 @@ export class DlnaService {
     id: string,
     action: "pause" | "resume" | "stop" | "seek" | "volume",
     positionMs?: number,
-    value?: number
+    value?: number,
   ): Promise<boolean> {
     if (this.disposed) return false;
     const runtime = this.devices.get(id);
@@ -687,10 +710,9 @@ export class DlnaService {
       await this.soap(
         runtime,
         "SetVolume",
-        "<InstanceID>0</InstanceID><Channel>Master</Channel>" +
-          `<DesiredVolume>${volume}</DesiredVolume>`,
+        "<InstanceID>0</InstanceID><Channel>Master</Channel>" + `<DesiredVolume>${volume}</DesiredVolume>`,
         RENDERING_CONTROL,
-        runtime.info.renderingControlURL
+        runtime.info.renderingControlURL,
       );
       this.applyVolume(runtime, volume);
       return true;
@@ -700,14 +722,13 @@ export class DlnaService {
       await this.soap(
         runtime,
         "Seek",
-        "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit>" +
-          `<Target>${formatHms(positionMs as number)}</Target>`
+        "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit>" + `<Target>${formatHms(positionMs as number)}</Target>`,
       );
       runtime.lastStatus = {
         state: runtime.lastStatus?.state ?? "playing",
         positionMs: Math.round(positionMs as number),
         durationMs: runtime.lastStatus?.durationMs ?? 0,
-        volume: runtime.volume
+        volume: runtime.volume,
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
       return true;
@@ -720,7 +741,7 @@ export class DlnaService {
         state: "idle",
         positionMs: 0,
         durationMs: runtime.lastStatus?.durationMs ?? 0,
-        volume: runtime.volume
+        volume: runtime.volume,
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
     }
@@ -806,7 +827,7 @@ export class DlnaService {
       volumePolling: false,
       volume: null,
       lastStatus: null,
-      lastSeenAt: Date.now()
+      lastSeenAt: Date.now(),
     });
     console.log(`${source} ${info.deviceName} ${info.controlURL}`);
     this.emitDevices();
@@ -818,7 +839,7 @@ export class DlnaService {
     action: string,
     inner: string,
     serviceType: string = AV_TRANSPORT,
-    controlURL: string = runtime.info.controlURL
+    controlURL: string = runtime.info.controlURL,
   ): Promise<string> {
     const controlUrl = await assertSafeUrl(controlURL, this.allowLoopback, this.allowCgnat);
     const body =
@@ -835,10 +856,10 @@ export class DlnaService {
         redirect: "manual",
         headers: {
           "Content-Type": 'text/xml; charset="utf-8"',
-          SOAPACTION: `"${serviceType}#${action}"`
+          SOAPACTION: `"${serviceType}#${action}"`,
         },
         body,
-        signal: controller.signal
+        signal: controller.signal,
       });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
@@ -873,7 +894,7 @@ export class DlnaService {
         "GetVolume",
         "<InstanceID>0</InstanceID><Channel>Master</Channel>",
         RENDERING_CONTROL,
-        runtime.info.renderingControlURL
+        runtime.info.renderingControlURL,
       );
       const parsed = Number.parseInt(localValue(xml, "CurrentVolume"), 10);
       this.applyVolume(runtime, Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 ? parsed : null);
@@ -936,16 +957,27 @@ export class DlnaService {
       }
       const rawState = localValue(transportXml, "CurrentTransportState").toUpperCase();
       const mapped = this.mapState(rawState);
-      const state = mapped ?? runtime.lastStatus?.state ?? "idle";
-      const position = positionXml ? parseHms(localValue(positionXml, "RelTime")) : runtime.lastStatus?.positionMs ?? 0;
-      const duration = positionXml ? parseHms(localValue(positionXml, "TrackDuration")) : runtime.lastStatus?.durationMs ?? 0;
+      const previous = runtime.lastStatus;
+      const state = mapped ?? previous?.state ?? "idle";
+      const position = positionXml ? parseHms(localValue(positionXml, "RelTime")) : (previous?.positionMs ?? 0);
+      const duration = positionXml ? parseHms(localValue(positionXml, "TrackDuration")) : (previous?.durationMs ?? 0);
+      // 先按旧状态判定“自然结束”，再覆盖 lastStatus：每次结束只可能触发一次。
+      // 某些电视 STOPPED 时 position 归零，因此取本次与上次位置/时长的较大值兜底。
+      const effectiveDuration = Math.max(duration, previous?.durationMs ?? 0);
+      const effectivePosition = Math.max(position, previous?.positionMs ?? 0);
+      const naturalEnd =
+        previous?.state === "playing" &&
+        state === "idle" &&
+        effectiveDuration > 0 &&
+        effectivePosition >= effectiveDuration * 0.95;
       runtime.lastStatus = {
         state,
         positionMs: position,
         durationMs: duration,
-        volume: runtime.volume
+        volume: runtime.volume,
       };
       this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
+      if (naturalEnd) this.onPlaybackEnded?.(runtime.info.id);
     } catch {
       runtime.failures += 1;
       if (runtime.failures >= OFFLINE_FAILURE_LIMIT && runtime.online) {
