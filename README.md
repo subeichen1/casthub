@@ -110,10 +110,11 @@ curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/instal
 
 ## 控制台界面
 
-控制台包含四个主要区域：
+控制台包含以下主要区域：
 
 - **设备**：输入电视显示的 `ws://<电视 IP>:9417` 和 8 位配对码，添加并查看设备在线状态；
 - **播放历史**：列出文件名、更新时间与进度百分比，可继续播放、从头播放、删除单条或清空全部；
+- **电视助手**：给 Android TV 一键安装 Aerial 极简桌面，也能一键还原（见下文）；
 - **媒体库**：浏览 `MEDIA_DIR` 下的视频文件，显示文件名、类型与大小；有播放历史的文件默认从上次位置继续，并提供「从头」入口；
 - **播放控制**：显示当前播放状态、进度条、暂停/继续和停止按钮。
 
@@ -373,6 +374,34 @@ npm start
 
 ![DLNA 设备列表](docs/dlna-ui-01-devices.png)
 
+## 电视助手（Aerial 极简桌面）
+
+[Aerial](https://github.com/pengchujin/aerial-tv)（MIT，`app.orchard.tv`）是第三方开源项目，把 Android TV 的桌面换成 Apple TV 风格的极简桌面。CastHub 只做「下载地址 + adb 命令模板」，**不内置也不分发 APK**，安装包始终从 Aerial 官方发布页获取。
+
+### 使用前提
+
+1. 电视与运行 CastHub 的电脑在同一局域网；
+2. 在电视上开启「开发者选项 → USB 调试 / 网络调试（ADB）」；
+3. 电脑上能运行 adb：优先用 `PATH` 里的 adb，其次用 `%LOCALAPPDATA%\CastHub\platform-tools\adb.exe`。也可以在 `config.json`/环境变量里指定：`CASTHUB_ADB_PATH` 或 `ADB_PATH`。没有 adb 时，控制台面板会给出 Google 官方 platform-tools 下载地址（需手动解压到上面那个目录）。
+4. 首次连接时电视会弹出「允许 USB 调试」，请勾选「始终允许」。
+
+### 操作
+
+在控制台左侧「电视助手」面板里选择目标电视（IP 从设备列表自动解析，不需要手输），点「一键安装桌面」。安装过程会依次显示下载进度与每一步 adb 命令的执行结果；失败时会给出中文原因（未授权、电视禁止安装、存储不足、签名冲突、连不上 5555 等）。装完后按电视 Home 键，选择 Aerial 作为默认桌面即可。
+
+「还原原桌面」执行通用还原步骤（关闭守护广播、撤销权限、清理 appops、移出无障碍服务、释放 HOME role、卸载）。海信、TCL、小米等品牌还有厂商定制项，面板里的「复制官方还原命令」会给出 Aerial 官方 `restore.sh` 命令，在 macOS/Linux 终端执行。
+
+### 版本与校验
+
+面板默认使用 GitHub Releases 的最新正式版，并显示版本号、体积与 SHA-256；发布页提供 `digest` 时下载后会强制校验，校验失败即中止且不会安装。GitHub API 不可达时回退官网镜像直链（此时无校验和，面板会标注「官网镜像」）。需要装特定版本时，在「装指定版本 / 手动安装」里填 https 的 APK 直链。
+
+下载缓存位于 `data/cache/tv-desktop`，可以随时删除；同一个 APK 再次安装会复用缓存。
+
+### 风险提示
+
+
+Aerial 会接管电视的默认桌面与 Home 键，属于对电视系统的修改。请在确认可以还原后再安装；还原依赖 adb 仍然可用，如果安装后又关闭了电视的 ADB 调试，就只能用官方脚本或电视恢复出厂设置。CastHub 不对第三方桌面的稳定性负责。
+
 ## 开发与测试
 
 ```bash
@@ -386,6 +415,7 @@ node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subtitle + /media
 node --import tsx scripts/e2e-embedded-subtitles.mjs # 内嵌字幕三模式 + 缓存路由 + DLNA DIDL
 npm run e2e-queue   # DLNA 播放队列 + 自动连播 + 停止/清空
+npm run e2e-tv-desktop # 电视助手：fake adb 覆盖安装/未授权/厂商拒绝/还原
 npm run e2e-security # 安全边界与历史存储恢复
 npm run test:updater # 桌面自动更新器单元测试
 ```
@@ -405,7 +435,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和五条 e2e，并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和八条 e2e（App 投屏、DLNA、播放历史、字幕、内嵌字幕、播放队列、电视助手、安全），并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 

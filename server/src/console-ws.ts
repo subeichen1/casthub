@@ -22,6 +22,7 @@ import {
 } from "./embedded-subtitles";
 import { findSubtitleCandidates, selectSubtitle } from "./subtitles";
 import { PlayQueue } from "./play-queue";
+import type { TvDesktopService } from "./tv-desktop";
 import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 import type { TvStatusPayload } from "./types";
@@ -50,6 +51,8 @@ export interface ConsoleWsOptions {
   history: HistoryRecorder;
   /** 内嵌字幕抽取与去字幕副本缓存目录。 */
   embeddedCacheDir: string;
+  /** 电视助手（Aerial 一键安装/还原）；缺省时不提供该功能。 */
+  tvDesktop?: TvDesktopService;
 }
 
 function resolveSubtitleMode(msg: ConsolePayload): SubtitleMode | null {
@@ -667,6 +670,55 @@ export function attachConsoleWs(
               }
             } else {
               sendJson(ws, { type: "error", message: "设备不存在" });
+            }
+            break;
+          }
+          case "getDesktopInfo": {
+            if (!options.tvDesktop) {
+              sendJson(ws, { type: "error", message: "电视助手不可用" });
+              break;
+            }
+            try {
+              const info = await options.tvDesktop.info(allDevices());
+              sendJson(ws, { type: "desktopInfo", ...info });
+            } catch (error) {
+              sendJson(ws, { type: "error", message: "读取电视助手信息失败: " + (error as Error).message });
+            }
+            break;
+          }
+          case "installDesktop": {
+            if (!options.tvDesktop) {
+              sendJson(ws, { type: "error", message: "电视助手不可用" });
+              break;
+            }
+            const deviceId = String(msg.deviceId ?? "");
+            const apkUrl = msg.apkUrl === undefined ? undefined : String(msg.apkUrl);
+            try {
+              const result = await options.tvDesktop.install(allDevices(), deviceId, {
+                apkUrl,
+                onProgress: (percent) => {
+                  sendJson(ws, { type: "desktopProgress", action: "install", percent });
+                }
+              });
+              sendJson(ws, { type: "desktopResult", ...result });
+              console.log(`[console] 电视助手安装 ${result.ok ? "成功" : "失败"}: ${result.message}`);
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
+            }
+            break;
+          }
+          case "uninstallDesktop": {
+            if (!options.tvDesktop) {
+              sendJson(ws, { type: "error", message: "电视助手不可用" });
+              break;
+            }
+            const deviceId = String(msg.deviceId ?? "");
+            try {
+              const result = await options.tvDesktop.uninstall(allDevices(), deviceId);
+              sendJson(ws, { type: "desktopResult", ...result });
+              console.log(`[console] 电视助手还原 ${result.ok ? "成功" : "失败"}: ${result.message}`);
+            } catch (error) {
+              sendJson(ws, { type: "error", message: (error as Error).message });
             }
             break;
           }

@@ -20,6 +20,7 @@
     "e2e-embedded-subtitles": "node --import tsx scripts/e2e-embedded-subtitles.mjs",
     "e2e-security": "node --import tsx scripts/e2e-security.mjs",
     "e2e-queue": "node --import tsx scripts/e2e-queue.mjs",
+    "e2e-tv-desktop": "node scripts/e2e-tv-desktop.mjs",
     "test:updater": "node --test scripts/updater.test.mjs",
     "perf": "node scripts/perf-smoke.mjs",
     "desktop": "electron .",

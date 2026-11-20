@@ -23,6 +23,8 @@
     consoleToken: "",
     authenticated: false,
     desktopUpdateBusy: false,
+    tvDesktop: null,
+    tvDesktopBusy: false,
   };
 
   const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
@@ -89,6 +91,20 @@
     desktopCheckUpdatesBtn: document.getElementById("desktopCheckUpdatesBtn"),
     desktopInstallUpdateBtn: document.getElementById("desktopInstallUpdateBtn"),
     updateStatus: document.getElementById("updateStatus"),
+    tvDesktopPanel: document.getElementById("tvDesktopPanel"),
+    tvDesktopAdbStatus: document.getElementById("tvDesktopAdbStatus"),
+    tvDesktopDevice: document.getElementById("tvDesktopDevice"),
+    tvDesktopMeta: document.getElementById("tvDesktopMeta"),
+    tvDesktopInstallBtn: document.getElementById("tvDesktopInstallBtn"),
+    tvDesktopUninstallBtn: document.getElementById("tvDesktopUninstallBtn"),
+    tvDesktopProgress: document.getElementById("tvDesktopProgress"),
+    tvDesktopStatus: document.getElementById("tvDesktopStatus"),
+    tvDesktopStepsWrap: document.getElementById("tvDesktopStepsWrap"),
+    tvDesktopSteps: document.getElementById("tvDesktopSteps"),
+    tvDesktopCustomUrl: document.getElementById("tvDesktopCustomUrl"),
+    tvDesktopCopyRestoreBtn: document.getElementById("tvDesktopCopyRestoreBtn"),
+    tvDesktopPlatformToolsBtn: document.getElementById("tvDesktopPlatformToolsBtn"),
+    tvDesktopRefreshBtn: document.getElementById("tvDesktopRefreshBtn"),
     toast: document.getElementById("toast"),
   };
 
@@ -133,6 +149,7 @@
       hideAuthGate();
       els.connState.textContent = "已连接中枢";
       els.connState.className = "conn-state ok";
+      send({ type: "getDesktopInfo" });
     };
     ws.onclose = function (event) {
       if (event.code === 1008) {
@@ -218,7 +235,29 @@
       renderQueue();
       return;
     }
+    if (msg.type === "desktopInfo") {
+      state.tvDesktop = msg;
+      renderTvDesktop();
+      return;
+    }
+    if (msg.type === "desktopProgress") {
+      applyTvDesktopProgress(msg);
+      return;
+    }
+    if (msg.type === "desktopResult") {
+      state.tvDesktopBusy = false;
+      state.tvDesktop = null;
+      renderTvDesktopResult(msg);
+      send({ type: "getDesktopInfo" });
+      return;
+    }
     if (msg.type === "error") {
+      if (state.tvDesktopBusy) {
+        state.tvDesktopBusy = false;
+        setTvDesktopStatus(msg.message || "未知错误", true);
+        setTvDesktopProgress(null);
+        renderTvDesktop();
+      }
       showToast(msg.message || "未知错误", true);
     }
   }
@@ -961,6 +1000,252 @@
     }
   }
 
+  function setTvDesktopStatus(text, isError) {
+    els.tvDesktopStatus.textContent = text || "";
+    els.tvDesktopStatus.className = "tv-desktop-status" + (text ? (isError ? " bad" : " ok") : "");
+  }
+
+  function setTvDesktopProgress(percent) {
+    const value = percent === null || percent === undefined ? null : Math.max(0, Math.min(100, Number(percent) || 0));
+    if (value === null) {
+      els.tvDesktopProgress.hidden = true;
+      els.tvDesktopProgress.firstElementChild.style.width = "0%";
+      return;
+    }
+    els.tvDesktopProgress.hidden = false;
+    els.tvDesktopProgress.firstElementChild.style.width = value + "%";
+  }
+
+  function formatBytes(value) {
+    const size = Number(value) || 0;
+    if (size <= 0) return "未知大小";
+    if (size >= 1024 * 1024) return (size / 1024 / 1024).toFixed(1) + " MB";
+    if (size >= 1024) return Math.round(size / 1024) + " KB";
+    return size + " B";
+  }
+
+  function setTvDesktopBusy(busy) {
+    state.tvDesktopBusy = !!busy;
+    els.tvDesktopInstallBtn.disabled = !!busy;
+    els.tvDesktopUninstallBtn.disabled = !!busy || !state.tvDesktop || !state.tvDesktop.adb || !state.tvDesktop.adb.available;
+    els.tvDesktopRefreshBtn.disabled = !!busy;
+    els.tvDesktopInstallBtn.textContent = busy ? "正在执行…" : "一键安装桌面";
+  }
+
+  function renderTvDesktop() {
+    const info = state.tvDesktop;
+    if (!info) {
+      els.tvDesktopPanel.hidden = true;
+      return;
+    }
+    els.tvDesktopPanel.hidden = false;
+
+    const adb = info.adb || {};
+    const adbOk = !!adb.available;
+    els.tvDesktopAdbStatus.textContent = adbOk ? "adb 就绪" + (adb.version ? " " + adb.version : "") : "adb 未找到";
+    els.tvDesktopAdbStatus.className = "tv-desktop-head-status " + (adbOk ? "ok" : "bad");
+
+    const targets = Array.isArray(info.targets) ? info.targets : [];
+    const previous = els.tvDesktopDevice.value;
+    els.tvDesktopDevice.innerHTML = "";
+    if (!targets.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "暂无可用设备（先在上方添加电视）";
+      els.tvDesktopDevice.appendChild(option);
+    } else {
+      targets.forEach(function (target) {
+        const option = document.createElement("option");
+        option.value = target.deviceId;
+        option.textContent = (target.name || target.deviceId) + (target.ip ? " · " + target.ip : " · 无法解析 IP");
+        els.tvDesktopDevice.appendChild(option);
+      });
+      const keep = targets.some(function (target) {
+        return target.deviceId === previous;
+      });
+      els.tvDesktopDevice.value = keep ? previous : targets[0].deviceId;
+    }
+
+    const meta = els.tvDesktopMeta;
+    meta.innerHTML = "";
+    function addLine(label, value) {
+      const line = document.createElement("div");
+      const code = document.createElement("code");
+      code.textContent = value;
+      line.textContent = label + "：";
+      line.appendChild(code);
+      meta.appendChild(line);
+    }
+    if (!adbOk) {
+      addLine("adb", adb.hint || "未找到 adb，请安装 platform-tools 或把 adb 加入 PATH");
+    } else {
+      addLine("adb", adb.path || "");
+    }
+    if (info.release) {
+      const release = info.release;
+      addLine(
+        "Aerial",
+        "v" +
+          String(release.tag || "").replace(/^v/i, "") +
+          " · " +
+          formatBytes(release.sizeBytes) +
+          (release.channel === "github" ? "" : " · " + (release.channel === "mirror" ? "官网镜像" : "自定义")),
+      );
+      addLine("sha256", release.sha256 || "发布页未提供校验和");
+    } else {
+      addLine("Aerial", info.releaseError || "无法获取最新版本信息");
+    }
+
+    setTvDesktopBusy(state.tvDesktopBusy);
+  }
+
+  function renderTvDesktopStep(step) {
+    const row = document.createElement("div");
+    row.className = "tv-desktop-step";
+    const mark = document.createElement("span");
+    mark.className = step.ok ? "ok" : step.required ? "fail" : "skip";
+    mark.textContent = step.ok ? "✓" : step.required ? "✗" : "–";
+    const body = document.createElement("div");
+    const cmd = document.createElement("div");
+    cmd.className = "cmd";
+    cmd.textContent = step.command;
+    body.appendChild(cmd);
+    if (step.output) {
+      const out = document.createElement("div");
+      out.className = "out";
+      out.textContent = step.output;
+      body.appendChild(out);
+    }
+    row.appendChild(mark);
+    row.appendChild(body);
+    return row;
+  }
+
+  function renderTvDesktopResult(result) {
+    const steps = Array.isArray(result.steps) ? result.steps : [];
+    els.tvDesktopSteps.innerHTML = "";
+    steps.forEach(function (step) {
+      els.tvDesktopSteps.appendChild(renderTvDesktopStep(step));
+    });
+    els.tvDesktopStepsWrap.hidden = steps.length === 0;
+    if (steps.length) els.tvDesktopStepsWrap.open = !result.ok;
+    setTvDesktopProgress(null);
+    setTvDesktopStatus(result.message || (result.ok ? "已完成" : "执行失败"), !result.ok);
+    showToast(result.message || (result.ok ? "已完成" : "执行失败"), !result.ok);
+  }
+
+  function applyTvDesktopProgress(progress) {
+    if (!progress) return;
+    state.tvDesktopBusy = true;
+    setTvDesktopBusy(true);
+    const percent = Number(progress.percent);
+    if (isFinite(percent) && percent > 0) {
+      setTvDesktopProgress(percent);
+      setTvDesktopStatus(progress.action === "uninstall" ? "正在还原…" : "正在下载安装包 " + percent + "%", false);
+    } else {
+      setTvDesktopStatus(progress.action === "uninstall" ? "正在还原…" : "正在准备…", false);
+    }
+  }
+
+  function selectedTvDesktopTarget() {
+    const info = state.tvDesktop;
+    if (!info || !Array.isArray(info.targets)) return null;
+    const id = els.tvDesktopDevice.value;
+    return (
+      info.targets.find(function (target) {
+        return target.deviceId === id;
+      }) || null
+    );
+  }
+
+  function copyText(text, okMessage) {
+    if (!text) return;
+    const fallback = function () {
+      showToast(text, false);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        showToast(okMessage, false);
+      }, fallback);
+      return;
+    }
+    fallback();
+  }
+
+  function initTvDesktop() {
+    els.tvDesktopInstallBtn.addEventListener("click", function () {
+      if (state.tvDesktopBusy) return;
+      const target = selectedTvDesktopTarget();
+      if (!target) {
+        showToast("请先选择目标电视", true);
+        return;
+      }
+      if (!target.ip) {
+        showToast("无法从设备地址解析电视 IP", true);
+        return;
+      }
+      if (!state.tvDesktop || !state.tvDesktop.adb || !state.tvDesktop.adb.available) {
+        setTvDesktopStatus(state.tvDesktop && state.tvDesktop.adb ? state.tvDesktop.adb.hint : "adb 不可用", true);
+        return;
+      }
+      if (!window.confirm("即将在「" + (target.name || target.ip) + "」上安装 Aerial 桌面并接管 Home 键，确定继续？")) {
+        return;
+      }
+      const payload = { type: "installDesktop", deviceId: target.deviceId };
+      const customUrl = els.tvDesktopCustomUrl.value.trim();
+      if (customUrl) payload.apkUrl = customUrl;
+      els.tvDesktopStepsWrap.hidden = true;
+      setTvDesktopBusy(true);
+      setTvDesktopStatus("正在准备…", false);
+      setTvDesktopProgress(0);
+      if (!send(payload)) {
+        setTvDesktopBusy(false);
+        setTvDesktopProgress(null);
+      }
+    });
+
+    els.tvDesktopUninstallBtn.addEventListener("click", function () {
+      if (state.tvDesktopBusy) return;
+      const target = selectedTvDesktopTarget();
+      if (!target) {
+        showToast("请先选择目标电视", true);
+        return;
+      }
+      if (!window.confirm("将卸载 Aerial 并尝试恢复原厂桌面，确定继续？")) return;
+      els.tvDesktopStepsWrap.hidden = true;
+      setTvDesktopBusy(true);
+      setTvDesktopStatus("正在还原…", false);
+      setTvDesktopProgress(0);
+      if (!send({ type: "uninstallDesktop", deviceId: target.deviceId })) {
+        setTvDesktopBusy(false);
+        setTvDesktopProgress(null);
+      }
+    });
+
+    els.tvDesktopRefreshBtn.addEventListener("click", function () {
+      send({ type: "getDesktopInfo" });
+    });
+
+    els.tvDesktopDevice.addEventListener("change", function () {
+      renderTvDesktop();
+    });
+
+    els.tvDesktopPlatformToolsBtn.addEventListener("click", function () {
+      const info = state.tvDesktop;
+      if (!info || !info.platformToolsUrl) {
+        showToast("暂无下载地址", true);
+        return;
+      }
+      copyText(info.platformToolsUrl, "已复制 platform-tools 下载地址");
+    });
+
+    els.tvDesktopCopyRestoreBtn.addEventListener("click", function () {
+      const command =
+        "curl -fsSL https://aerial.qust.me/install.sh | bash -s restore --uninstall";
+      copyText(command, "已复制官方还原命令（macOS/Linux 终端执行）");
+    });
+  }
+
   els.connectBtn.addEventListener("click", function () {
     const token = els.consoleTokenInput.value.trim();
     if (token.length < 16) {
@@ -995,4 +1280,5 @@
 
   start();
   initDesktopSettings();
+  initTvDesktop();
 })();

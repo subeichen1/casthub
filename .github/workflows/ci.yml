@@ -42,6 +42,8 @@ jobs:
         run: cd server && npm run e2e-embedded-subtitles
       - name: E2E (Playback queue)
         run: cd server && npm run e2e-queue
+      - name: E2E (TV desktop helper)
+        run: cd server && npm run e2e-tv-desktop
       - name: E2E (Security)
         run: cd server && npm run e2e-security
       - name: SBOM (CycloneDX)

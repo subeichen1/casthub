@@ -11,6 +11,7 @@ import { DlnaService } from "./dlna";
 import { registerFileRoutes } from "./files";
 import { createHistoryStore, HistoryRecorder } from "./history";
 import { detectEmbeddedSubtitleTools } from "./embedded-subtitles";
+import { TvDesktopService } from "./tv-desktop";
 import { createRotatingLogStream } from "./log";
 import { resolveConsoleToken } from "./security";
 
@@ -222,6 +223,7 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   app.log.info(
     `内嵌字幕工具: ffprobe=${embeddedTools.ffprobe ? "可用" : "不可用"} ffmpeg=${embeddedTools.ffmpeg ? "可用" : "不可用"}`
   );
+  const tvDesktop = new TvDesktopService({ cacheDir: path.join(resolved.dataDir as string, "cache", "tv-desktop") });
 
   // 安全响应头：控制台页面只允许加载自身资源。
   app.addHook("onSend", async (_request, reply, payload) => {
@@ -252,7 +254,8 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
     publicBaseUrl,
     mediaSigningKey,
     history,
-    embeddedCacheDir
+    embeddedCacheDir,
+    tvDesktop
   });
 
   // 控制台静态页面（无构建步骤）

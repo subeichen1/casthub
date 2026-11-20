@@ -35,10 +35,16 @@
 | 控制台→中枢 | queuePlay | {deviceId}（开始或继续该设备队列；空队列返回 error） |
 | 控制台→中枢 | queueRemove | {deviceId, index}（当前播放项返回 error，需先停止） |
 | 控制台→中枢 | queueClear | {deviceId}（正在播放时先停止，再清空队列） |
+| 控制台→中枢 | getDesktopInfo | {}（电视助手：adb 状态、Aerial 最新版本、可选电视列表） |
+| 控制台→中枢 | installDesktop | {deviceId, apkUrl?}（在目标电视上安装 Aerial 桌面并接管 Home；apkUrl 仅 https，缺省用 GitHub 最新正式版） |
+| 控制台→中枢 | uninstallDesktop | {deviceId}（卸载 Aerial 并执行通用还原步骤） |
 | 中枢→控制台 | devices | {list: [{id, address, online, type: "casthub"\|"dlna", deviceName, volume?}]}（DLNA 音量 0-100；null/缺省表示不支持） |
 | 中枢→控制台 | tvStatus | {deviceId, state, positionMs, durationMs, volume?}（历史由中枢内部消费） |
 | 中枢→控制台 | history | {list: [{path, name, positionMs, durationMs, updatedAt, playCount, lastDeviceId}]}（updatedAt 倒序，最多 200 条） |
 | 中枢→控制台 | queue | {deviceId, queue: {items: [{path, name}], currentIndex, state: "idle"\|"playing"\|"switching"\|"paused"\|"completed", playing, error?}}（连接建立时下发已有队列，变化时广播；currentIndex 未开始为 -1） |
+| 中枢→控制台 | desktopInfo | {adb: {available, path, version, source: "env"\|"local"\|"path"\|"missing", hint}, release: {tag, apkName, apkUrl, sizeBytes, sha256, publishedAt, channel: "github"\|"mirror"\|"custom"} \| null, releaseError, targets: [{deviceId, name, address, ip, kind}], cacheDir, busy, packageName, platformToolsUrl} |
+| 中枢→控制台 | desktopProgress | {action: "install"\|"uninstall", percent}（安装阶段下载 APK 时上报 0-100） |
+| 中枢→控制台 | desktopResult | {action: "install"\|"uninstall", ok, message, steps: [{key, title, command, ok, required, output}], verification: {homeLauncher, accessibility, focus, detail} \| null, release} |
 | 中枢→控制台 | error | {message} |
 
 ## 播放历史与断点续播（协议增量）
@@ -68,6 +74,15 @@
 - 自动连播由服务器执行，不依赖控制台页面：当前项自然结束（播放器由 `playing` 转为 `idle`，且位置达到时长的 95%）后等待 `DLNA_AUTO_NEXT_DELAY_MS`（默认 1500ms）自动播放下一项；最后一项结束后停在最后一项并置为 `completed`，不重复投最后一项。切集期间通过 `switching` 锁和播放令牌忽略旧视频的 STOPPED 轮询，避免连跳；自动下一项失败会置为 `paused` 并广播错误，连续失败 2 次停止自动尝试。
 - 手动 `control` 的 `stop` 只停止当前播放并保留队列为 `paused`，不会触发自动下一项；之后的 `queuePlay` 从当前项从头播放。`queueRemove` 不允许移除当前播放项；`queueClear` 会先停止当前播放再清空。
 - 队列内的每一项仍独立走现有 DLNA 字幕准备流程，任何时刻最多只输出一条字幕。
+
+## 电视助手（Aerial 桌面，协议增量）
+
+- 目标电视只能来自现有设备列表（`devices`），中枢从设备地址解析 IP（casthub 为 `ws://ip:9417`，DLNA 为 LOCATION URL），串口统一为 `<ip>:5555`；不新增手工 IP 输入。
+- `getDesktopInfo` 每次实时探测 adb（顺序：`CASTHUB_ADB_PATH`/`ADB_PATH` → `%LOCALAPPDATA%\CastHub\platform-tools` → `PATH`）并查询 Aerial 最新正式版（GitHub Releases API，10 分钟缓存；失败回退官网镜像直链，此时 `sha256` 为 null、`channel` 为 `mirror`）。`busy` 为 true 时拒绝新的安装/还原请求。
+- `installDesktop` 流程：解析版本 → 下载 APK 到 `data/cache/tv-desktop`（仅 https 或本机 `file://`，>64 MB 拒绝，发布页提供 `sha256` 时强校验，写 `.part` 后原子重命名）→ `adb connect <ip>:5555` → `get-state` → `install -r`（三条必需）→ 官方可选步骤（`pm grant`、`appops`、`cmd notification allow_listener`、`am start`、`cmd package compile`）。任何必需步骤失败立即中止并返回已执行步骤明细。
+- 安装后验收三条：默认 HOME（`cmd package resolve-activity -a android.intent.action.MAIN -c android.intent.category.HOME`）、无障碍服务包含 `app.orchard.tv/.guard.HomeGuardService`、`dumpsys window` 的 `mCurrentFocus` 属于 Aerial。未接管默认桌面时 `ok` 仍为 true，但 `message` 提示手动设置默认桌面。
+- `uninstallDesktop` 执行最小还原：`am broadcast` 关闭 keep_adb、`cmd notification disallow_listener`、`pm revoke`、6 条 `appops set … default`、`am force-stop`、从 `enabled_accessibility_services` 剔除 Aerial、`cmd role remove-role-holder --user 0 android.app.role.HOME app.orchard.tv`，最后 `uninstall`。海信/TCL/小米等品牌定制项不在通用还原范围内，控制台给出官方 `restore.sh` 命令供手动执行。
+- Aerial 为第三方开源项目（MIT，`pengchujin/aerial-tv`），安装包不随 CastHub 分发；CastHub 只提供下载地址与 adb 命令模板。电视端 App（tv-app）无任何改动。
 
 ## REST
 
