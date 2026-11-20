@@ -180,6 +180,7 @@
     }
     .tv-desktop-meta { color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 8px; word-break: break-all; }
     .tv-desktop-meta code { font-family: Consolas, monospace; color: #cbd5e1; }
+    .tv-desktop-meta code.update { color: var(--cyan); }
     .tv-desktop-actions { display: flex; gap: 8px; margin-top: 12px; }
     .tv-desktop-actions button { flex: 1; padding: 8px 10px; font-size: 12px; }
     .tv-desktop-progress { height: 6px; border-radius: 999px; background: #0d1728; margin-top: 10px; overflow: hidden; }
@@ -364,6 +365,7 @@
         </div>
       </details>
       <div class="hint">安装包不随 CastHub 分发，安装时从 GitHub 官方发布页（或官网镜像）下载并校验 SHA-256；adb 缺失时可点下方按钮查看下载地址。还原只做通用步骤，品牌定制项请用官方脚本。</div>
+      <div class="hint">面板会读取电视上已装的 Aerial 版本并提示是否有新版本（不会自动升级，重新一键安装即为升级）。「刷新」会绕过 10 分钟的发布信息缓存。</div>
       <div class="tv-desktop-row">
         <button id="tvDesktopPlatformToolsBtn" class="secondary small">adb 下载地址</button>
         <button id="tvDesktopRefreshBtn" class="secondary small">刷新</button>

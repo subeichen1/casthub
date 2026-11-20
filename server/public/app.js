@@ -25,6 +25,9 @@
     desktopUpdateBusy: false,
     tvDesktop: null,
     tvDesktopBusy: false,
+    tvDesktopInstalled: {},
+    tvDesktopInstalledPending: null,
+    tvDesktopAutoQueried: false,
   };
 
   const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
@@ -149,7 +152,10 @@
       hideAuthGate();
       els.connState.textContent = "已连接中枢";
       els.connState.className = "conn-state ok";
-      send({ type: "getDesktopInfo" });
+      state.tvDesktopInstalled = {};
+      state.tvDesktopInstalledPending = null;
+      state.tvDesktopAutoQueried = false;
+      requestTvDesktopInfo(false);
     };
     ws.onclose = function (event) {
       if (event.code === 1008) {
@@ -236,8 +242,7 @@
       return;
     }
     if (msg.type === "desktopInfo") {
-      state.tvDesktop = msg;
-      renderTvDesktop();
+      applyTvDesktopInfo(msg);
       return;
     }
     if (msg.type === "desktopProgress") {
@@ -247,8 +252,11 @@
     if (msg.type === "desktopResult") {
       state.tvDesktopBusy = false;
       state.tvDesktop = null;
+      state.tvDesktopInstalled = {};
+      state.tvDesktopInstalledPending = null;
+      state.tvDesktopAutoQueried = false;
       renderTvDesktopResult(msg);
-      send({ type: "getDesktopInfo" });
+      requestTvDesktopInfo(false);
       return;
     }
     if (msg.type === "error") {
@@ -1032,6 +1040,56 @@
     els.tvDesktopInstallBtn.textContent = busy ? "正在执行…" : "一键安装桌面";
   }
 
+  function selectedTvDesktopDeviceId() {
+    const id = els.tvDesktopDevice.value;
+    return id ? id : null;
+  }
+
+  /** 拉取面板信息；带 deviceId 时中枢会顺带查电视上已装的 Aerial 版本。 */
+  function requestTvDesktopInfo(force) {
+    const deviceId = selectedTvDesktopDeviceId();
+    const payload = { type: "getDesktopInfo" };
+    if (deviceId) payload.deviceId = deviceId;
+    if (force) payload.force = true;
+    send(payload);
+  }
+
+  function queryTvDesktopInstalled(deviceId) {
+    if (!deviceId || state.tvDesktopBusy) return;
+    if (state.tvDesktopInstalled[deviceId]) return;
+    state.tvDesktopInstalledPending = deviceId;
+    send({ type: "getDesktopInfo", deviceId: deviceId });
+  }
+
+  function applyTvDesktopInfo(msg) {
+    state.tvDesktop = msg;
+    const installed = msg.installed;
+    if (installed && installed.deviceId) {
+      state.tvDesktopInstalled[installed.deviceId] = installed;
+      if (state.tvDesktopInstalledPending === installed.deviceId) state.tvDesktopInstalledPending = null;
+    }
+    renderTvDesktop();
+    // 首次连上后自动查一次当前选中电视的已装版本（之后切设备按需查、结果缓存）。
+    if (!installed && !state.tvDesktopAutoQueried && !state.tvDesktopBusy) {
+      const deviceId = selectedTvDesktopDeviceId();
+      if (deviceId) {
+        state.tvDesktopAutoQueried = true;
+        queryTvDesktopInstalled(deviceId);
+      }
+    }
+  }
+
+  /** 「刷新」：绕过中枢 10 分钟发布缓存，并重新读取已装版本。 */
+  function refreshTvDesktop() {
+    const deviceId = selectedTvDesktopDeviceId();
+    state.tvDesktopAutoQueried = true;
+    if (deviceId) {
+      delete state.tvDesktopInstalled[deviceId];
+      state.tvDesktopInstalledPending = deviceId;
+    }
+    requestTvDesktopInfo(true);
+  }
+
   function renderTvDesktop() {
     const info = state.tvDesktop;
     if (!info) {
@@ -1068,9 +1126,10 @@
 
     const meta = els.tvDesktopMeta;
     meta.innerHTML = "";
-    function addLine(label, value) {
+    function addLine(label, value, className) {
       const line = document.createElement("div");
       const code = document.createElement("code");
+      if (className) code.className = className;
       code.textContent = value;
       line.textContent = label + "：";
       line.appendChild(code);
@@ -1096,7 +1155,31 @@
       addLine("Aerial", info.releaseError || "无法获取最新版本信息");
     }
 
+    const deviceId = selectedTvDesktopDeviceId();
+    const installed = deviceId ? state.tvDesktopInstalled[deviceId] : null;
+    if (deviceId) {
+      if (state.tvDesktopInstalledPending === deviceId) {
+        addLine("电视上的 Aerial", "正在读取…");
+      } else if (installed && installed.error) {
+        addLine("电视上的 Aerial", installed.error);
+      } else if (installed && !installed.installed) {
+        addLine("电视上的 Aerial", "未安装");
+      } else if (installed) {
+        addLine("电视上的 Aerial", "v" + String(installed.version || ""));
+        if (installed.updateAvailable && info.release) {
+          addLine(
+            "可更新",
+            "有新版本 v" + String(info.release.tag || "").replace(/^v/i, "") + "，可重新一键安装升级",
+            "update",
+          );
+        }
+      }
+    }
+
     setTvDesktopBusy(state.tvDesktopBusy);
+    if (deviceId && !installed && state.tvDesktopInstalledPending !== deviceId) {
+      queryTvDesktopInstalled(deviceId);
+    }
   }
 
   function renderTvDesktopStep(step) {
@@ -1223,7 +1306,7 @@
     });
 
     els.tvDesktopRefreshBtn.addEventListener("click", function () {
-      send({ type: "getDesktopInfo" });
+      refreshTvDesktop();
     });
 
     els.tvDesktopDevice.addEventListener("change", function () {

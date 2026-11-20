@@ -176,12 +176,12 @@ function sha256(buffer) {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function writeReleaseJson(file, apkPath, sha) {
+function writeReleaseJson(file, apkPath, sha, tag = "e2e-1.0.0") {
   fs.writeFileSync(
     file,
     JSON.stringify(
       {
-        tag: "e2e-1.0.0",
+        tag,
         apkName: "aerial-standard.apk",
         apkUrl: pathToFileURL(apkPath).href,
         sizeBytes: fs.statSync(apkPath).size,
@@ -244,14 +244,14 @@ async function main() {
   console.log("测试临时目录:", tempDir);
   console.log("测试 DATA_DIR:", dataDir);
 
-  console.log("\n[1/7] 启动 fake-tv ...");
+  console.log("\n[1/8] 启动 fake-tv ...");
   const fakeTv = startProcess("fake-tv", ["scripts/fake-tv.mjs"], {
     cwd: SERVER_DIR,
     env: { ...process.env, FAKE_TV_PORT: String(TV_PORT), FAKE_TV_TOKEN: TV_TOKEN, FAKE_TV_NAME: "Fake TV" }
   });
   await fakeTv.waitFor(/LISTENING/, 10000, "fake-tv 监听");
 
-  console.log("[2/7] 启动中枢（fake adb + 本地 APK）...");
+  console.log("[2/8] 启动中枢（fake adb + 本地 APK）...");
   const serverEnv = {
     ...process.env,
     PORT: String(HTTP_PORT),
@@ -270,7 +270,7 @@ async function main() {
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
-  console.log("[3/7] 连接控制台并读取电视助手信息 ...");
+  console.log("[3/8] 连接控制台并读取电视助手信息 ...");
   const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await consoleClient.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   consoleClient.send({ type: "addDevice", address: `ws://127.0.0.1:${TV_PORT}`, token: TV_TOKEN });
@@ -293,7 +293,75 @@ async function main() {
   assert(info.busy === false, "电视助手初始不忙");
   assert(info.packageName === AERIAL_PACKAGE, "面板显示目标包名 " + info.packageName);
 
-  console.log("[4/7] 一键安装（成功路径）...");
+  console.log("[4/8] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
+  consoleClient.send({ type: "getDesktopInfo", deviceId: device.id });
+  const installedInfo = await consoleClient.waitFor(
+    (m) => m.type === "desktopInfo" && m.installed && m.installed.deviceId === device.id,
+    20000,
+    "desktopInfo(installed)"
+  );
+  assert(installedInfo.installed.installed === true, "读到电视上已装 Aerial: v" + installedInfo.installed.version);
+  assert(installedInfo.installed.version === "2.11", "已装版本来自 dumpsys versionName: " + installedInfo.installed.version);
+  assert(installedInfo.installed.updateAvailable === false, "非数字 tag 不做版本比较，不误报更新");
+  assert(installedInfo.installed.error === null, "已装版本查询无错误");
+
+  // 电视上是 1.0.0、发布页是 2.0.0 → 提示有更新。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({
+      installed: true,
+      accessibility: "com.example/.Svc:" + AERIAL_PACKAGE + "/.guard.HomeGuardService",
+      version: "1.0.0",
+      versionCode: 100
+    })
+  );
+  writeReleaseJson(releaseJson, apkPath, apkSha, "2.0.0");
+  consoleClient.send({ type: "getDesktopInfo", deviceId: device.id, force: true });
+  const updateInfo = await consoleClient.waitFor(
+    (m) => m.type === "desktopInfo" && m.installed && m.installed.version === "1.0.0",
+    20000,
+    "desktopInfo(update)"
+  );
+  assert(updateInfo.installed.updateAvailable === true, "电视版本更旧时提示有新版本: 1.0.0 → " + updateInfo.release.tag);
+
+  // 不传 force 时命中 10 分钟缓存：改发布页也不生效；传 force 立即生效。
+  writeReleaseJson(releaseJson, apkPath, apkSha, "3.0.0");
+  const cacheMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo" });
+  const cachedInfo = await consoleClient.waitForAfter(
+    cacheMark,
+    (m) => m.type === "desktopInfo",
+    20000,
+    "desktopInfo(cached)"
+  );
+  assert(cachedInfo.release.tag === "2.0.0", "不传 force 时使用 10 分钟发布缓存: " + cachedInfo.release.tag);
+  assert(cachedInfo.installed === undefined, "不带 deviceId 时不查询已装版本（不额外跑 adb）");
+  const forceMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", force: true });
+  const forcedInfo = await consoleClient.waitForAfter(
+    forceMark,
+    (m) => m.type === "desktopInfo",
+    20000,
+    "desktopInfo(force)"
+  );
+  assert(forcedInfo.release.tag === "3.0.0", "force=true 绕过缓存拿到最新发布: " + forcedInfo.release.tag);
+
+  // 恢复安装前的状态，后续段落继续按原剧本走。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({ installed: true, accessibility: "com.example/.Svc:" + AERIAL_PACKAGE + "/.guard.HomeGuardService" })
+  );
+  writeReleaseJson(releaseJson, apkPath, apkSha);
+  const restoreMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", force: true });
+  await consoleClient.waitForAfter(
+    restoreMark,
+    (m) => m.type === "desktopInfo" && m.release && m.release.tag === "e2e-1.0.0",
+    20000,
+    "desktopInfo(恢复)"
+  );
+
+  console.log("[5/8] 一键安装（成功路径）...");
   const progressSeen = [];
   const collectProgress = setInterval(() => {
     for (const msg of consoleClient.messages) {
@@ -337,7 +405,7 @@ async function main() {
     "fake adb 处理了 version 探测"
   );
 
-  console.log("[5/7] 未授权路径（unauthorized）...");
+  console.log("[6/8] 未授权路径（unauthorized）...");
   fs.writeFileSync(modeFile, "unauthorized");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const unauthorizedResult = await consoleClient.waitFor(
@@ -349,7 +417,7 @@ async function main() {
   assert(stepByKey(unauthorizedResult, "state").ok === false, "get-state 步骤被判定失败");
   assert(!stepByKey(unauthorizedResult, "install"), "未授权时不继续执行 install");
 
-  console.log("[6/7] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
+  console.log("[7/8] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
   fs.writeFileSync(modeFile, "user-restricted");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const restrictedResult = await consoleClient.waitFor(
@@ -371,7 +439,7 @@ async function main() {
   assert(customUrlResult.message.includes("https://"), "自定义地址仅允许 https: " + customUrlResult.message);
   assert(readAdbCalls(adbLog).length === callsBefore, "自定义地址被拒时没有执行 adb");
 
-  console.log("[7/7] 还原（最小步骤）与忙时拒绝 ...");
+  console.log("[8/8] 还原（最小步骤）与忙时拒绝 ...");
   fs.writeFileSync(modeFile, "slow");
   const slowMark = consoleClient.mark();
   consoleClient.send({ type: "installDesktop", deviceId: device.id });

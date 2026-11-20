@@ -397,6 +397,12 @@ npm start
 
 下载缓存位于 `data/cache/tv-desktop`，可以随时删除；同一个 APK 再次安装会复用缓存。
 
+### 已装版本与更新提示
+
+面板选中电视后会自动读取电视上已装的 Aerial 版本（`adb shell dumpsys package app.orchard.tv` 的 `versionName`），显示「电视上的 Aerial：v2.11」；如果 GitHub 上的最新正式版更高，会额外提示「有新版本 vX，可重新一键安装升级」。比较用语义化版本号，镜像渠道或版本号解析不出来时不提示更新，避免误报。
+
+CastHub **不会自动升级**已装的 Aerial：确认要升级时再点一次「一键安装桌面」即可（内部是 `adb install -r`，保留数据）。发布信息默认缓存 10 分钟，点面板上的「刷新」会绕过缓存重新查询 GitHub Releases，同时重新读取已装版本。
+
 ### 风险提示
 
 

@@ -679,7 +679,10 @@ export function attachConsoleWs(
               break;
             }
             try {
-              const info = await options.tvDesktop.info(allDevices());
+              const info = await options.tvDesktop.info(allDevices(), {
+                force: msg.force === true,
+                deviceId: msg.deviceId === undefined ? undefined : String(msg.deviceId)
+              });
               sendJson(ws, { type: "desktopInfo", ...info });
             } catch (error) {
               sendJson(ws, { type: "error", message: "读取电视助手信息失败: " + (error as Error).message });

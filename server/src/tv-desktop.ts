@@ -53,6 +53,16 @@ export interface TvDesktopTarget {
   kind: "casthub" | "dlna";
 }
 
+/** 电视上已安装的 Aerial 版本（只有显式请求 deviceId 时才查询，避免每次开面板都跑 adb）。 */
+export interface TvDesktopInstalledInfo {
+  deviceId: string;
+  installed: boolean;
+  version: string | null;
+  /** 最新发布版比已装版本新时为 true；无法比较（镜像渠道 / 非数字版本）时恒为 false。 */
+  updateAvailable: boolean;
+  error: string | null;
+}
+
 export interface TvDesktopInfo {
   adb: AdbInfo;
   release: AerialReleaseInfo | null;
@@ -62,6 +72,7 @@ export interface TvDesktopInfo {
   busy: boolean;
   packageName: string;
   platformToolsUrl: string;
+  installed?: TvDesktopInstalledInfo;
 }
 
 export interface TvDesktopStep {
@@ -676,6 +687,43 @@ async function verifyUninstall(ctx: ExecContext, serial: string): Promise<TvDesk
   return { homeLauncher: !stillInstalled, accessibility: !focus, focus, detail };
 }
 
+/** 从 `dumpsys package` 输出里取 versionName（Aerial 正式版形如 2.11）。 */
+export function parseInstalledVersion(output: string): string | null {
+  const match = output.match(/versionName=([0-9][0-9A-Za-z.\-_]*)/);
+  return match ? match[1] : null;
+}
+
+function versionSegments(value: string): number[] | null {
+  const cleaned = value.trim().replace(/^v/i, "");
+  if (!/^[0-9]+(?:\.[0-9]+)*$/.test(cleaned)) return null;
+  return cleaned.split(".").map((part) => Number(part));
+}
+
+/** 语义化比较：a > b 返回正数，相等 0，a < b 负数；任一方无法解析返回 null（此时不提示更新）。 */
+export function compareVersions(a: string | null, b: string | null): number | null {
+  if (!a || !b) return null;
+  const left = versionSegments(a);
+  const right = versionSegments(b);
+  if (!left || !right) return null;
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    const l = left[i] ?? 0;
+    const r = right[i] ?? 0;
+    if (l !== r) return l - r;
+  }
+  return 0;
+}
+
+/** 查询电视上已装的 Aerial 版本；未安装返回 installed=false。 */
+async function queryInstalledVersion(adbPath: string, serial: string): Promise<{ installed: boolean; version: string | null }> {
+  const result = await runTool(adbPath, ["-s", serial, "shell", "dumpsys", "package", AERIAL_PACKAGE], ADB_STEP_TIMEOUT_MS);
+  const text = result.stdout + result.stderr;
+  if (/Unable to find package|Unknown package|not found/i.test(text)) return { installed: false, version: null };
+  const version = parseInstalledVersion(text);
+  if (!version) return { installed: false, version: null };
+  return { installed: true, version };
+}
+
 function targetOf(devices: readonly TvDesktopDeviceInput[], deviceId: string): TvDesktopTarget {
   const target = listTargets(devices).find((item) => item.deviceId === deviceId);
   if (!target) throw new Error("设备不存在");
@@ -701,9 +749,16 @@ export class TvDesktopService {
     return this.running !== null;
   }
 
-  async info(devices: readonly TvDesktopDeviceInput[]): Promise<TvDesktopInfo> {
-    const [adb, releaseResult] = await Promise.all([detectAdb(), fetchLatestRelease()]);
-    return {
+  /**
+   * 读取面板信息。`options.force` 绕过 10 分钟发布信息缓存（面板「刷新」用）；
+   * `options.deviceId` 会额外查询该电视上已装的 Aerial 版本并判断是否有更新。
+   */
+  async info(
+    devices: readonly TvDesktopDeviceInput[],
+    options?: { force?: boolean; deviceId?: string }
+  ): Promise<TvDesktopInfo> {
+    const [adb, releaseResult] = await Promise.all([detectAdb(), fetchLatestRelease({ force: options?.force })]);
+    const info: TvDesktopInfo = {
       adb,
       release: releaseResult.release,
       releaseError: releaseResult.error,
@@ -713,6 +768,44 @@ export class TvDesktopService {
       packageName: AERIAL_PACKAGE,
       platformToolsUrl: PLATFORM_TOOLS_URL
     };
+    if (options?.deviceId) {
+      info.installed = await this.installedInfo(devices, options.deviceId, adb, releaseResult.release);
+    }
+    return info;
+  }
+
+  /** 查询指定电视的已装版本；任何失败都降级成 error 字段，不影响面板其余信息。 */
+  private async installedInfo(
+    devices: readonly TvDesktopDeviceInput[],
+    deviceId: string,
+    adb: AdbInfo,
+    release: AerialReleaseInfo | null
+  ): Promise<TvDesktopInstalledInfo> {
+    const empty = { deviceId, installed: false, version: null, updateAvailable: false };
+    if (!adb.available || !adb.path) return { ...empty, error: "adb 不可用，无法读取电视上已装版本" };
+    let target: TvDesktopTarget;
+    try {
+      target = targetOf(devices, deviceId);
+    } catch (error) {
+      return { ...empty, error: errorMessage(error) };
+    }
+    const serial = serialFor(target.ip as string);
+    try {
+      // 只连不断开：后续安装/还原复用同一个 adb 连接。
+      await runTool(adb.path, ["connect", serial], ADB_CONNECT_TIMEOUT_MS);
+      const current = await queryInstalledVersion(adb.path, serial);
+      const latest = release && release.channel !== "mirror" ? release.tag : null;
+      const diff = current.installed ? compareVersions(latest, current.version) : null;
+      return {
+        deviceId,
+        installed: current.installed,
+        version: current.version,
+        updateAvailable: diff !== null && diff > 0,
+        error: null
+      };
+    } catch (error) {
+      return { ...empty, error: "读取已装版本失败: " + errorMessage(error) };
+    }
   }
 
   private begin(action: string): void {

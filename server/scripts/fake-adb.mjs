@@ -29,10 +29,12 @@ function readState() {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     return {
       installed: parsed.installed !== false,
-      accessibility: typeof parsed.accessibility === "string" ? parsed.accessibility : DEFAULT_ACCESSIBILITY
+      accessibility: typeof parsed.accessibility === "string" ? parsed.accessibility : DEFAULT_ACCESSIBILITY,
+      version: typeof parsed.version === "string" ? parsed.version : "2.11",
+      versionCode: typeof parsed.versionCode === "number" ? parsed.versionCode : 2110
     };
   } catch {
-    return { installed: true, accessibility: DEFAULT_ACCESSIBILITY };
+    return { installed: true, accessibility: DEFAULT_ACCESSIBILITY, version: "2.11", versionCode: 2110 };
   }
 }
 
@@ -87,11 +89,11 @@ async function main() {
     if (mode === "user-restricted") {
       out("Performing Streamed Install\nFailure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]", 1);
     }
-    writeState({ installed: true, accessibility: state.accessibility });
+    writeState({ installed: true, accessibility: state.accessibility, version: state.version, versionCode: state.versionCode });
     out("Performing Streamed Install\nSuccess");
   }
   if (rest[0] === "uninstall") {
-    writeState({ installed: false, accessibility: state.accessibility });
+    writeState({ installed: false, accessibility: state.accessibility, version: state.version, versionCode: state.versionCode });
     out("Success");
   }
   if (rest[0] === "shell") {
@@ -99,6 +101,15 @@ async function main() {
     const head = shellArgs.slice(0, 2).join(" ");
     if (head === "pm grant" || head === "pm revoke" || head === "appops set") out("");
     if (head === "pm list") out(state.installed ? "package:app.orchard.tv" : "");
+    if (head === "dumpsys package") {
+      if (!state.installed) out("Unable to find package: app.orchard.tv");
+      out(
+        "Packages:\n  Package [app.orchard.tv] (d1e2f3):\n    versionName=" +
+          (state.version || "2.11") +
+          "\n    versionCode=" +
+          (state.versionCode || 2110)
+      );
+    }
     if (head === "am broadcast") out("Broadcast completed: result=0");
     if (head === "am start") out("Starting: Intent { cmp=app.orchard.tv/.MainActivity }");
     if (head === "am force-stop" || head === "cmd notification" || head === "cmd role") out("");
@@ -119,7 +130,7 @@ async function main() {
     }
     if (head === "settings get") out(state.accessibility);
     if (head === "settings put") {
-      writeState({ installed: state.installed, accessibility: shellArgs[4] });
+      writeState({ installed: state.installed, accessibility: shellArgs[4], version: state.version, versionCode: state.versionCode });
       out("");
     }
     out("");
