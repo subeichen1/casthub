@@ -2,6 +2,8 @@
 
 > **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
+> **v0.2.2 状态（2026-11-20）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.2>（release id `452814340`）。Release workflow run `44756147441` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,643,992 字节）、`CastHub-TV.apk`（1,824,060 字节）、`casthub-src.tar.gz`（2,038,637 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `9ecddb4`，CI run `44755729080` 为 `success`。
+>
 > **v0.2.1 状态（2026-11-16）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.1>（release id `447082839`）。Release workflow run `43875933408` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,632,872 字节）、`CastHub-TV.apk`（1,824,063 字节）、`casthub-src.tar.gz`（2,013,622 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `49765b5`，CI run `43875910909` 为 `success`。
 >
 > **v0.2.0 状态（2026-11-15）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.0>（release id `445993590`）。Release workflow run `43706644078` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,625,936 字节）、`CastHub-TV.apk`（1,824,057 字节）、`casthub-src.tar.gz`（1,971,821 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `c3aa104`，CI run `43706624549` 为 `success`。
@@ -99,6 +101,10 @@ git log origin/main -1 --oneline
    - GitHub Actions 的容器网络通常限制多播，`e2e-dlna.mjs` 在 8 秒内发现不到 DLNA 设备时会自动改用 `DLNA_SEED` 重启中枢（脚本 `server/scripts/e2e-dlna.mjs` 第 201–214 行的降级分支），不会硬失败。若 CI 仍失败，请点进具体 job 查看日志。
 
 ## 5. Release 记录（已由 Release workflow 自动完成）
+
+### v0.2.2（2026-11-20）
+
+> tag `v0.2.2`（指向 `9ecddb4`，annotated tag 对象 `932d98bdf37d2474e2711ea3a1795df102cde920`），Release workflow run `44756147441` 的 windows / android / source / publish 四个 job 全部 `success`。Release id `452814340`：<https://github.com/subeichen1/casthub/releases/tag/v0.2.2>。资产 `CastHub.exe`（119,643,992 字节，sha256 `00118fafa4dbb77b2176cfde9b4289cbb555d0863ddc8f43ca2b78f37c279041`）、`CastHub-TV.apk`（1,824,060 字节，sha256 `e7d502e200a6d4750eeba3e17b59995807f1c560b2e8acfbfa094477e4628dfa`）、`casthub-src.tar.gz`（2,038,637 字节，sha256 `0578720ab24b0738fe23fc13b7b86db42cdb744552218f14d1cac616d6a62844`）、`checksums.txt`（244 字节，sha256 `f5b038b0b61e4695435c94b205fd7220d6c4ee7819a7cd3dc0912d70cad7c664`）。本版本包含「电视助手」（Aerial 极简桌面一键安装 / 还原、已装版本读取与更新提示、刷新绕过缓存）；服务端和 Android TV 版本号均为 0.2.2（tv-app versionCode 5）。
 
 ### v0.2.1（2026-11-16）
 
