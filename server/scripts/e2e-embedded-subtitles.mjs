@@ -196,7 +196,25 @@ function didlSubtitleUrl(didl) {
   return decodeXml(match[1]);
 }
 
+/** 等待 fake DLNA 输出静默，确保上一轮投屏的日志已全部落地。 */
+async function drainFake(fake, quietMs = 300, maxMs = 4000) {
+  const deadline = Date.now() + maxMs;
+  let last = fake.lines.length;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    await sleep(50);
+    if (fake.lines.length !== last) {
+      last = fake.lines.length;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= quietMs) {
+      return;
+    }
+  }
+}
+
 async function castAndWait(client, fake, device, filePath, extra, label) {
+  // 上一次投屏的日志可能仍在管道里；先等静默再清空，避免上一轮的 MEDIA_PROBE 混进本轮断言。
+  await drainFake(fake);
   client.messages.length = 0;
   fake.lines.length = 0;
   client.send({ type: "cast", deviceId: device.id, path: filePath, ...extra });
@@ -555,7 +573,7 @@ async function main() {
   await castAndWait(client, fake, device, "off.mp4", { subtitleMode: "off" }, "off");
   const offCount = await fake.waitFor(/^SUBTITLE_URL_COUNT /, 5000, "off 字幕数量");
   assertCount(offCount, 0, "off");
-  const offProbeLine = await fake.waitFor(/^MEDIA_PROBE 206 /, 5000, "off 媒体探测");
+  const offProbeLine = await fake.waitFor(/^MEDIA_PROBE 206 \S*off\.mp4/, 5000, "off 媒体探测");
   assert(offProbeLine.includes("subtitles=0"), "off 媒体 URL 带 subtitles=0");
   assert(!fake.lines.some((line) => line.startsWith("SUBTITLE_GET")), "off 未请求字幕");
 

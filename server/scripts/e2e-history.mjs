@@ -257,7 +257,15 @@ async function main() {
   const fileJson = await fileRes.json();
   const video = fileJson.entries.find((entry) => !entry.isDir && /\.mp4$/i.test(entry.name));
   assert(!!video, "/api/files 返回视频: " + video.name);
-  const expectedPath = path.resolve(mediaDir, video.path);
+  // Windows CI 的 TEMP 可能含 8.3 短名（如 RUNNER~1）；服务器用 fs.promises.realpath 存储长路径，比较前统一展开。
+  const realPath = (value) => {
+    try {
+      return fs.realpathSync.native(path.resolve(value));
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const expectedPath = realPath(path.resolve(mediaDir, video.path));
   client.messages.length = 0;
   client.send({ type: "cast", deviceId: device.id, path: video.path });
   const playing = await client.waitFor(
@@ -296,11 +304,11 @@ async function main() {
   client.messages.length = 0;
   client.send({ type: "getHistory" });
   const historyReply = await client.waitFor(
-    (m) => m.type === "history" && Array.isArray(m.list) && m.list.some((h) => path.resolve(h.path) === expectedPath),
+    (m) => m.type === "history" && Array.isArray(m.list) && m.list.some((h) => realPath(h.path) === expectedPath),
     8000,
     "history 包含 sample.mp4"
   );
-  const historyEntry = historyReply.list.find((h) => path.resolve(h.path) === expectedPath);
+  const historyEntry = historyReply.list.find((h) => realPath(h.path) === expectedPath);
   console.log("getHistory entry:", JSON.stringify(historyEntry));
   assert(
     historyEntry.positionMs >= 29500 && historyEntry.positionMs <= 60000,

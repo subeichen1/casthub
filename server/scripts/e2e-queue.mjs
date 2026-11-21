@@ -206,6 +206,16 @@ function countLines(lines, prefix) {
   return lines.filter((line) => line.startsWith(prefix)).length;
 }
 
+async function waitForLineIndex(lines, predicate, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const index = lines.findIndex(predicate);
+    if (index >= 0) return index;
+    await sleep(50);
+  }
+  throw new Error("等待目标输出行超时");
+}
+
 async function waitUnitCount(lines, prefix, expected, timeoutMs = 8000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -428,8 +438,12 @@ async function main() {
     "普通 cast 播放 C",
   );
   assert(castPlaying.durationMs === DURATION_MS, "普通 cast 播放的仍是 C");
-  await waitUnitCount(fake.lines, "DIDL_RECEIVED ", 1);
-  assert(countLines(fake.lines, "SUBTITLE_URL_COUNT 1") === 1, "普通 cast 也只输出一条字幕 URL");
+  // 清空 fake.lines 时队列里 B 的投屏命令可能仍在管道中，按“C 的 DIDL 之后”统计，避免混入上一项的输出。
+  const castDidlIndex = await waitForLineIndex(fake.lines, (line) => line.startsWith("DIDL_RECEIVED ") && line.includes(names[2]), 8000);
+  await waitUnitCount(fake.lines.slice(castDidlIndex), "SUBTITLE_URL_COUNT ", 1);
+  await sleep(300);
+  const castTail = fake.lines.slice(castDidlIndex);
+  assert(countLines(castTail, "SUBTITLE_URL_COUNT 1") === 1, "普通 cast 也只输出一条字幕 URL");
 
   client.close();
   await stopHub(server);
