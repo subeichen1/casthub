@@ -1,5 +1,5 @@
 // 设备管理与「中枢→电视」WS 客户端（断线指数退避重连，上限 30s）
-import { randomBytes } from "node:crypto";
+import { pbkdf2Sync, randomBytes } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import type { DeviceView, TvState, TvStatusPayload } from "./types";
 
@@ -34,11 +34,13 @@ interface Device {
   token: string;
   deviceName: string;
   online: boolean;
+  authenticated: boolean;
   removed: boolean;
   fatalTokenError: boolean;
   ws: WebSocket | null;
   reconnectTimer: NodeJS.Timeout | null;
   heartbeatTimer: NodeJS.Timeout | null;
+  helloTimer: NodeJS.Timeout | null;
   reconnectDelay: number;
   lastSeenAt: number;
 }
@@ -122,11 +124,13 @@ export class DeviceManager {
       token,
       deviceName: "电视",
       online: false,
+      authenticated: false,
       removed: false,
       fatalTokenError: false,
       ws: null,
       reconnectTimer: null,
       heartbeatTimer: null,
+      helloTimer: null,
       reconnectDelay: INITIAL_RECONNECT_MS,
       lastSeenAt: 0
     };
@@ -145,6 +149,7 @@ export class DeviceManager {
       device.reconnectTimer = null;
     }
     this.clearHeartbeat(device);
+    this.clearHelloTimer(device);
     if (device.ws) {
       device.ws.removeAllListeners();
       try {
@@ -176,6 +181,7 @@ export class DeviceManager {
       device.removed = true;
       if (device.reconnectTimer) clearTimeout(device.reconnectTimer);
       this.clearHeartbeat(device);
+      this.clearHelloTimer(device);
       device.ws?.removeAllListeners();
       try {
         device.ws?.close(1000, "server shutdown");
@@ -204,6 +210,33 @@ export class DeviceManager {
     }
   }
 
+  private clearHelloTimer(device: Device): void {
+    if (device.helloTimer) {
+      clearTimeout(device.helloTimer);
+      device.helloTimer = null;
+    }
+  }
+
+  private sendLegacyHello(device: Device): void {
+    if (!device.ws || device.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      device.ws.send(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION, token: device.token, clientId: this.clientId }));
+    } catch (error) {
+      console.error(`[devices] 发送 hello 失败: ${(error as Error).message}`);
+    }
+  }
+
+  /** 新协议：配对码只作为 PBKDF2 密钥，不在网络上传输。 */
+  private sendChallengeHello(device: Device, nonce: string): void {
+    if (!device.ws || device.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      const proof = pbkdf2Sync(device.token, nonce + ":" + this.clientId + ":" + PROTOCOL_VERSION, 100000, 32, "sha1").toString("base64url");
+      device.ws.send(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION, clientId: this.clientId, challenge: nonce, proof }));
+    } catch (error) {
+      console.error(`[devices] 发送 challenge hello 失败: ${(error as Error).message}`);
+    }
+  }
+
   private startHeartbeat(device: Device): void {
     this.clearHeartbeat(device);
     device.heartbeatTimer = setInterval(() => {
@@ -224,6 +257,7 @@ export class DeviceManager {
   private connect(device: Device): void {
     if (device.removed || device.fatalTokenError) return;
     if (device.ws && (device.ws.readyState === WebSocket.CONNECTING || device.ws.readyState === WebSocket.OPEN)) return;
+    this.clearHelloTimer(device);
 
     let ws: WebSocket;
     try {
@@ -239,14 +273,16 @@ export class DeviceManager {
     device.ws = ws;
 
     ws.on("open", () => {
+      device.authenticated = false;
       device.reconnectDelay = INITIAL_RECONNECT_MS;
       device.lastSeenAt = Date.now();
       this.startHeartbeat(device);
-      try {
-        ws.send(JSON.stringify({ type: "hello", version: PROTOCOL_VERSION, token: device.token, clientId: this.clientId }));
-      } catch (error) {
-        console.error(`[devices] 发送 hello 失败: ${(error as Error).message}`);
-      }
+      // 新电视会先发 challenge，用配对码派生 proof；旧电视不认 challenge，超时后回退旧 hello。
+      this.clearHelloTimer(device);
+      device.helloTimer = setTimeout(() => {
+        device.helloTimer = null;
+        this.sendLegacyHello(device);
+      }, 1000);
     });
 
     ws.on("message", (data) => {
@@ -269,8 +305,10 @@ export class DeviceManager {
     ws.on("close", (code) => {
       const wasOnline = device.online;
       device.online = false;
+      device.authenticated = false;
       device.ws = null;
       this.clearHeartbeat(device);
+      this.clearHelloTimer(device);
       if (code === 4001) {
         device.fatalTokenError = true;
         this.onDeviceError?.(device.id, "配对码错误，电视已断开（close 4001）");
@@ -303,7 +341,16 @@ export class DeviceManager {
       return;
     }
 
+    if (msg.type === "challenge") {
+      const nonce = typeof msg.nonce === "string" ? msg.nonce : "";
+      if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return;
+      this.clearHelloTimer(device);
+      this.sendChallengeHello(device, nonce);
+      return;
+    }
+
     if (msg.type === "helloAck") {
+      this.clearHelloTimer(device);
       if (msg.version !== undefined) {
         const version = Number(msg.version);
         if (!Number.isInteger(version) || version !== PROTOCOL_VERSION) {
@@ -321,6 +368,7 @@ export class DeviceManager {
         device.deviceName = sanitizeDeviceName(msg.deviceName);
       }
       if (msg.ok === true) {
+        device.authenticated = true;
         device.lastSeenAt = Date.now();
         if (!device.online) {
           device.online = true;
@@ -331,6 +379,11 @@ export class DeviceManager {
         this.onDeviceError?.(device.id, "电视拒绝了配对");
         this.emitDevices();
       }
+      return;
+    }
+
+    if (!device.authenticated) {
+      // helloAck 之前不接受任何播放状态/错误，避免未配对连接影响队列与历史。
       return;
     }
 

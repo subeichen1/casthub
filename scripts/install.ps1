@@ -13,6 +13,7 @@ param(
     [string]$MediaDir = '',
     [string]$SourceExe = '',
     [string]$Sha256 = '',
+    [string]$SignerSubject = 'CN=CastHub Development*',
     [switch]$AllowUnsigned,
     [switch]$RequireSignature,
     [switch]$NoShortcuts,
@@ -55,10 +56,18 @@ function Assert-Checksum([string]$Path, [string]$Expected, [string]$Label) {
 
 function Assert-Authenticode([string]$Path) {
     $signature = Get-AuthenticodeSignature -LiteralPath $Path
+    $subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }
+    if ($subject -notlike $SignerSubject) {
+        Fail "CastHub.exe 签名者不匹配：$subject（期望 $SignerSubject）"
+    }
+    if ($signature.Status -eq 'UnknownError') {
+        Write-Step "数字签名证书链不受信任，但签名者与配置匹配：$subject"
+        return
+    }
     if ($signature.Status -ne 'Valid') {
         Fail "CastHub.exe 数字签名无效（$($signature.Status)），请从官方 Release 重新下载。"
     }
-    Write-Step "数字签名校验通过：$($signature.SignerCertificate.Subject)"
+    Write-Step "数字签名校验通过：$subject"
 }
 
 Write-Host ''

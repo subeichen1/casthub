@@ -166,6 +166,9 @@ export function attachConsoleWs(
     if (mode === "auto") {
       const probe = await probeEmbeddedSubtitles(target);
       if (!probe.available) {
+        // ffmpeg/ffprobe 缺失只影响“内嵌字幕探测”，不应连带禁用已有的外挂字幕。
+        const external = await externalSubtitleUrl(target, realRoot);
+        if (external) return { mediaUrl, subtitleUrl: external };
         return {
           mediaUrl: withSubtitleFlag(mediaUrl, true),
           subtitleUrl: null,
@@ -206,7 +209,6 @@ export function attachConsoleWs(
     try {
       stripped = await createSubtitleStrippedVideo(target, {
         cacheDir: options.embeddedCacheDir,
-        cacheKey: path.basename(extracted.srtPath),
       });
     } catch (error) {
       throw new Error(`生成去字幕副本失败: ${(error as Error).message}`);
@@ -217,6 +219,7 @@ export function attachConsoleWs(
         options.embeddedCacheDir,
         stripped.videoPath,
         options.mediaSigningKey,
+        extracted.srtPath,
       ),
       subtitleUrl: buildEmbeddedSubtitleUrl(
         options.publicBaseUrl,
@@ -375,18 +378,31 @@ export function attachConsoleWs(
     broadcast({ type: "error", message });
   };
 
+  const cleanupDeviceState = (deviceId: string): void => {
+    pendingSeeks.delete(deviceId);
+    options.history.forgetDevice(deviceId);
+    void playQueue.clear(deviceId, { stopPlayback: false }).catch((error: unknown) => {
+      console.warn(`[console] 清理设备队列失败 ${deviceId}: ${(error as Error).message}`);
+    });
+  };
+
   devices.onDevicesChanged = broadcastDevices;
   devices.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
   devices.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
   dlna.onDevicesChanged = broadcastDevices;
   dlna.onTvStatus = (deviceId, status) => handleTvStatus(deviceId, status);
   dlna.onDeviceError = (deviceId, message) => handleDeviceError(deviceId, message);
-  dlna.onDeviceRemoved = (deviceId) => options.history.forgetDevice(deviceId);
+  dlna.onDeviceRemoved = cleanupDeviceState;
   dlna.onPlaybackEnded = (deviceId) => playQueue.handlePlaybackEnded(deviceId);
 
   wss.on("connection", (ws, req) => {
     if (wss.clients.size > MAX_CONNECTIONS) {
       ws.close(1013, "too many connections");
+      return;
+    }
+    // 先校验 Origin：恶意网页不能用错误令牌反复连接，把同 IP 的正常控制台锁死。
+    if (!originAllowed(req.headers.origin, req.headers.host, options.publicBaseUrl)) {
+      ws.close(1008, "bad origin");
       return;
     }
     const ip = clientIp(req as { socket: { remoteAddress?: string } });
@@ -408,10 +424,6 @@ export function attachConsoleWs(
       return;
     }
     authFailures.delete(ip);
-    if (!originAllowed(req.headers.origin, req.headers.host, options.publicBaseUrl)) {
-      ws.close(1008, "bad origin");
-      return;
-    }
 
     authorized.add(ws);
     let messageWindowStart = Date.now();
@@ -491,7 +503,7 @@ export function attachConsoleWs(
               break;
             }
             devices.remove(id);
-            options.history.forgetDevice(id);
+            cleanupDeviceState(id);
             broadcastDevices();
             break;
           }
@@ -591,7 +603,21 @@ export function attachConsoleWs(
             const deviceId = String(msg.deviceId ?? "");
             const relPath = String(msg.path ?? "");
             // 普通“投屏/从头”是单文件操作：先清空该 DLNA 设备的旧队列，避免后台继续跳。
+            // 清空前先做轻量预检，路径非法/文件不存在时不能丢掉用户已有队列。
             if (dlna.has(deviceId) && (playQueue.get(deviceId)?.items.length ?? 0) > 0) {
+              const preflight = await resolveWithinReal(mediaRoot, relPath);
+              let preflightStat: fs.Stats | null = null;
+              if (preflight) {
+                try {
+                  preflightStat = await fs.promises.stat(preflight);
+                } catch {
+                  preflightStat = null;
+                }
+              }
+              if (!preflight || !preflightStat || !preflightStat.isFile()) {
+                sendJson(ws, { type: "error", message: !preflight ? "路径非法" : "文件不存在" });
+                break;
+              }
               await playQueue.clear(deviceId, { stopPlayback: false });
             }
             let subtitleMode: SubtitleMode | undefined;
@@ -699,6 +725,7 @@ export function attachConsoleWs(
             try {
               const result = await options.tvDesktop.install(allDevices(), deviceId, {
                 apkUrl,
+                allowUnverified: msg.allowUnverified === true,
                 onProgress: (percent) => {
                   sendJson(ws, { type: "desktopProgress", action: "install", percent });
                 }

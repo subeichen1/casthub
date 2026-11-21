@@ -158,11 +158,18 @@
       requestTvDesktopInfo(false);
     };
     ws.onclose = function (event) {
-      if (event.code === 1008) {
+      if (event.code === 1008 && event.reason === "unauthorized") {
         state.ws = null;
         showAuthGate("访问令牌无效或已过期，请重新输入。");
         els.connState.textContent = "需要访问令牌";
         els.connState.className = "conn-state bad";
+        return;
+      }
+      if (event.code === 1013) {
+        els.connState.textContent = "连接数过多，稍后重试…";
+        els.connState.className = "conn-state bad";
+        if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
+        state.reconnectTimer = setTimeout(connectWs, 5000);
         return;
       }
       els.connState.textContent = "中枢连接断开，2 秒后重连…";
@@ -1277,6 +1284,17 @@
       const payload = { type: "installDesktop", deviceId: target.deviceId };
       const customUrl = els.tvDesktopCustomUrl.value.trim();
       if (customUrl) payload.apkUrl = customUrl;
+      const release = state.tvDesktop && state.tvDesktop.release;
+      if (customUrl || (release && !release.sha256)) {
+        if (
+          !window.confirm(
+            "当前 Aerial 安装包未提供 SHA-256 校验值，无法验证下载完整性。请确认下载来源可信，是否继续？",
+          )
+        ) {
+          return;
+        }
+        payload.allowUnverified = true;
+      }
       els.tvDesktopStepsWrap.hidden = true;
       setTvDesktopBusy(true);
       setTvDesktopStatus("正在准备…", false);

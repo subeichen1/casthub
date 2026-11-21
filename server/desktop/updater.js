@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const MAX_UPDATE_BYTES = 350 * 1024 * 1024;
 
 function isHttpsUrl(value) {
   if (typeof value !== "string") return false;
@@ -88,6 +89,7 @@ async function downloadFile(url, destination, onProgress) {
   if (!response.body) throw new Error("下载失败：响应没有文件内容");
   const totalHeader = Number(response.headers.get("content-length"));
   const total = Number.isFinite(totalHeader) && totalHeader > 0 ? totalHeader : 0;
+  if (total > MAX_UPDATE_BYTES) throw new Error(`更新包体积异常：${total} 字节`);
   const handle = await fs.promises.open(destination, "w");
   let received = 0;
   try {
@@ -98,6 +100,7 @@ async function downloadFile(url, destination, onProgress) {
       const chunk = Buffer.from(value);
       await handle.writeFile(chunk);
       received += chunk.length;
+      if (received > MAX_UPDATE_BYTES) throw new Error("更新包体积异常，已中止下载");
       if (typeof onProgress === "function") {
         const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0;
         onProgress({ received, total, percent });

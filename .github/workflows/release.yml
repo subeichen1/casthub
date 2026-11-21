@@ -24,6 +24,16 @@ jobs:
           cache-dependency-path: server/package-lock.json
       - name: Install dependencies
         run: cd server; npm ci
+      - name: Typecheck
+        run: cd server; npm run typecheck
+      - name: Lint
+        run: cd server; npm run lint
+      - name: Dependency audit
+        run: cd server; npm audit --audit-level=high
+      - name: Updater tests
+        run: cd server; npm run test:updater
+      - name: End-to-end tests
+        run: cd server; npm run e2e:all
       - name: Build server
         run: cd server; npm run build
       - name: Decode code-signing certificate
@@ -98,6 +108,11 @@ jobs:
           echo "CASTHUB_KEYSTORE_PASSWORD=$CASTHUB_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
           echo "CASTHUB_KEY_ALIAS=$CASTHUB_KEY_ALIAS" >> "$GITHUB_ENV"
           echo "CASTHUB_KEY_PASSWORD=$CASTHUB_KEY_PASSWORD" >> "$GITHUB_ENV"
+      - name: Android lint
+        run: |
+          cd tv-app
+          chmod +x gradlew
+          ./gradlew :app:lintRelease --no-daemon --stacktrace
       - name: Build release APK
         run: |
           cd tv-app

@@ -431,13 +431,18 @@ export async function downloadApk(
   assertRemoteUrl(release.apkUrl);
   await fs.promises.mkdir(cacheDir, { recursive: true });
   const safeTag = release.tag.replace(/[^0-9A-Za-z._-]/g, "_").slice(0, 40) || "latest";
-  const target = path.join(cacheDir, "aerial-" + safeTag + ".apk");
+  // 同一 tag 可能对应不同下载地址（尤其 custom），缓存名必须带上 URL 摘要，避免复用旧包。
+  const urlKey = createHash("sha256").update(release.apkUrl).digest("hex").slice(0, 16);
+  const target = path.join(cacheDir, "aerial-" + safeTag + "-" + urlKey + ".apk");
 
   if (fs.existsSync(target)) {
-    const existing = await sha256File(target);
-    if (!release.sha256 || existing === release.sha256) {
-      return { filePath: target, sha256: existing, cached: true };
+    if (release.sha256) {
+      const existing = await sha256File(target);
+      if (existing === release.sha256) {
+        return { filePath: target, sha256: existing, cached: true };
+      }
     }
+    // 没有期望摘要时不能证明缓存仍对应原地址内容，强制重新下载。
     await fs.promises.rm(target, { force: true });
   }
 
@@ -451,6 +456,9 @@ export async function downloadApk(
       redirect: "follow",
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
     });
+    if (response.url && !/^https:\/\//i.test(response.url)) {
+      throw new Error("下载 APK 时重定向到了非 HTTPS 地址");
+    }
     if (!response.ok) throw new Error("下载 APK 失败: HTTP " + response.status);
     if (!response.body) throw new Error("下载 APK 失败: 响应为空");
     const total = Number(response.headers.get("content-length") ?? 0);
@@ -820,7 +828,7 @@ export class TvDesktopService {
   async install(
     devices: readonly TvDesktopDeviceInput[],
     deviceId: string,
-    options?: { apkUrl?: string; onProgress?: (percent: number) => void }
+    options?: { apkUrl?: string; allowUnverified?: boolean; onProgress?: (percent: number) => void }
   ): Promise<TvDesktopResult> {
     this.begin("安装");
     const steps: TvDesktopStep[] = [];
@@ -849,6 +857,16 @@ export class TvDesktopService {
       }
       if (!release) {
         return { action: "install", ok: false, message: "无法获取 Aerial 安装包地址", steps, verification: null, release: null };
+      }
+      if (!release.sha256 && !options?.allowUnverified) {
+        return {
+          action: "install",
+          ok: false,
+          message: "Aerial 安装包未提供 SHA-256，无法验证完整性；请确认来源可信后重试",
+          steps,
+          verification: null,
+          release
+        };
       }
 
       let apkPath: string;

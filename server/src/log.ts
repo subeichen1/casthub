@@ -5,7 +5,17 @@ import { Writable } from "node:stream";
 
 export function createRotatingLogStream(file: string, maxBytes = 5 * 1024 * 1024, keep = 3): Writable {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  let stream = fs.createWriteStream(file, { flags: "a" });
+
+  function openStream(): fs.WriteStream {
+    const next = fs.createWriteStream(file, { flags: "a" });
+    // 磁盘满、权限变化等写入错误必须被消费，否则会成为未处理的 error 事件并终止进程。
+    next.on("error", (error) => {
+      console.error(`[log] 写入日志失败 ${file}: ${error.message}`);
+    });
+    return next;
+  }
+
+  let stream = openStream();
 
   function rotateFiles(): void {
     const oldest = `${file}.${keep}`;
@@ -27,7 +37,7 @@ export function createRotatingLogStream(file: string, maxBytes = 5 * 1024 * 1024
       } catch {
         // 轮转失败时继续写原文件，不能影响主流程。
       }
-      stream = fs.createWriteStream(file, { flags: "a" });
+      stream = openStream();
       next();
     });
   }

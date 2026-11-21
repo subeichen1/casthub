@@ -232,34 +232,60 @@ export class JsonHistoryStore implements HistoryStore {
   }
 
   private load(): void {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.filePath, "utf8").replace(/^\uFEFF/, "");
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error("历史文件不是数组");
-      for (const item of parsed) {
-        const record = asRecord(item);
-        if (!record) continue;
-        const entry = {
-          path: typeof record.path === "string" ? record.path : "",
-          name: typeof record.name === "string" ? record.name : "",
-          positionMs: Number(record.positionMs),
-          durationMs: Number(record.durationMs),
-          updatedAt: Number(record.updatedAt),
-          playCount: Number(record.playCount),
-          lastDeviceId: typeof record.lastDeviceId === "string" ? record.lastDeviceId : null,
-        };
-        if (entry.path && entry.name && Number.isFinite(entry.positionMs) && Number.isFinite(entry.durationMs)) {
-          this.entries.set(entry.path, entry);
-        }
-      }
+      raw = fs.readFileSync(this.filePath, "utf8").replace(/^\uFEFF/, "");
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
-        console.error(`[history] JSON 历史文件损坏，重建空文件: ${this.filePath} (${(error as Error).message})`);
-        this.entries.clear();
-        this.persist();
+        // 权限、磁盘或临时 I/O 错误不能当作“历史文件损坏”，否则会静默清空历史。
+        console.error(`[history] 读取 JSON 历史文件失败，保留原文件: ${this.filePath} (${(error as Error).message})`);
+      }
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      this.resetCorrupt(`JSON 解析失败: ${(error as Error).message}`);
+      return;
+    }
+    if (!Array.isArray(parsed)) {
+      this.resetCorrupt("历史文件不是数组");
+      return;
+    }
+
+    for (const item of parsed) {
+      const record = asRecord(item);
+      if (!record) continue;
+      const entry = {
+        path: typeof record.path === "string" ? record.path : "",
+        name: typeof record.name === "string" ? record.name : "",
+        positionMs: Number(record.positionMs),
+        durationMs: Number(record.durationMs),
+        updatedAt: Number(record.updatedAt),
+        playCount: Number(record.playCount),
+        lastDeviceId: typeof record.lastDeviceId === "string" ? record.lastDeviceId : null,
+      };
+      if (entry.path && entry.name && Number.isFinite(entry.positionMs) && Number.isFinite(entry.durationMs)) {
+        this.entries.set(entry.path, entry);
       }
     }
+  }
+
+  private resetCorrupt(reason: string): void {
+    const backupPath = `${this.filePath}.corrupt-${Date.now()}`;
+    try {
+      fs.copyFileSync(this.filePath, backupPath);
+      console.error(`[history] JSON 历史文件损坏（${reason}），已备份到 ${backupPath} 并重建空文件`);
+    } catch (error) {
+      // 备份失败时保留原文件，避免为了“自愈”反而销毁唯一副本。
+      console.error(`[history] JSON 历史文件损坏（${reason}），备份失败，保留原文件: ${(error as Error).message}`);
+      return;
+    }
+    this.entries.clear();
+    this.persist();
   }
 
   private persist(): void {

@@ -1,6 +1,8 @@
 package io.casthub.tv
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -32,7 +34,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.regenerateButton).setOnClickListener {
             wsServer?.stop()
             pairingCode = generatePairingCode()
-            startServer()
+            // Java-WebSocket 的 stop(1000) 异步释放端口，立即重启可能撞上 EADDRINUSE。
+            Handler(Looper.getMainLooper()).postDelayed({ startServer() }, 300L)
         }
     }
 
@@ -87,7 +90,7 @@ class MainActivity : AppCompatActivity() {
                 val lowerName = networkInterface.name.lowercase()
                 if (Regex("^(p2p|dummy|rmnet|tun|tap|veth|docker|bridge)").containsMatchIn(lowerName)) continue
                 for (address in Collections.list(networkInterface.inetAddresses)) {
-                    if (address is Inet4Address && !address.isLoopbackAddress && !address.isLinkLocalAddress) {
+                    if (address is Inet4Address && !address.isLoopbackAddress && !address.isLinkLocalAddress && address.isSiteLocalAddress) {
                         val host = address.hostAddress ?: continue
                         val score = when {
                             host.startsWith("192.168.") -> 0

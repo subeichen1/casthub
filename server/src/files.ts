@@ -102,12 +102,16 @@ export function buildEmbeddedMediaUrl(
   publicBaseUrl: string,
   cacheRoot: string,
   mediaPath: string,
-  signingKey: Buffer
+  signingKey: Buffer,
+  subtitlePath?: string
 ): string {
   const rel = path.relative(cacheRoot, mediaPath).split(path.sep).join("/");
   const expires = Date.now() + MEDIA_URL_TTL_MS;
   const signature = signMediaPath(signingKey, rel, expires);
-  return `${publicBaseUrl}/api/embedded-media?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}`;
+  const subtitleQuery = subtitlePath
+    ? `&subtitle=${encodeURIComponent(path.relative(cacheRoot, subtitlePath).split(path.sep).join("/"))}`
+    : "";
+  return `${publicBaseUrl}/api/embedded-media?path=${encodeURIComponent(rel)}&expires=${expires}&sig=${encodeURIComponent(signature)}${subtitleQuery}`;
 }
 
 /** 在 resolveWithin 的基础上做 realpath 校验，阻止通过符号链接逃逸 mediaRoot。 */
@@ -383,15 +387,14 @@ export async function registerFileRoutes(
     method: ["GET", "HEAD"],
     url: "/api/embedded-media",
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
-      const query = request.query as { path?: string; subtitles?: string };
+      const query = request.query as { path?: string; subtitles?: string; subtitle?: string };
       const rel = typeof query.path === "string" ? query.path : "";
       if (!rel || !mediaAuthorized(request, rel, options)) {
         return reply.code(401).send({ error: "unauthorized" });
       }
       const target = await resolveWithinReal(embeddedRootReal, rel);
       if (!target) return reply.code(404).send({ error: "not found" });
-      const extension = path.extname(target).toLowerCase();
-      if (extension !== ".mp4" && extension !== ".m4v" && extension !== ".mkv") {
+      if (!mimeTypeOf(target).startsWith("video/")) {
         return reply.code(415).send({ error: "unsupported embedded media format" });
       }
       // 先打开再 stat，避免检查与读取之间被替换（与 /media 相同）。
@@ -412,14 +415,18 @@ export async function registerFileRoutes(
       const subtitleDisabled = query.subtitles === "0";
       const wantsCaptionInfo = Object.keys(request.headers).some((key) => key.toLowerCase() === "getcaptioninfo.sec");
       if (!subtitleDisabled && wantsCaptionInfo) {
-        const mediaName = path.basename(target);
-        const srtName = mediaName.replace(/\.nosubs\.[^.]+$/i, ".srt");
-        if (srtName !== mediaName) {
-          const srtPath = path.join(path.dirname(target), srtName);
-          const srtStat = await fsp.stat(srtPath).catch(() => null);
-          if (srtStat?.isFile()) {
-            captionInfoUrl = buildEmbeddedSubtitleUrl(options.publicBaseUrl, embeddedRootReal, srtPath, options.mediaSigningKey);
-          }
+        let srtPath: string | null = null;
+        if (typeof query.subtitle === "string" && query.subtitle) {
+          srtPath = await resolveWithinReal(embeddedRootReal, query.subtitle);
+        } else {
+          // 兼容旧缓存：去字幕副本与同名 SRT 放在一起时仍可回退推断。
+          const mediaName = path.basename(target);
+          const srtName = mediaName.replace(/\.nosubs\.[^.]+$/i, ".srt");
+          if (srtName !== mediaName) srtPath = path.join(path.dirname(target), srtName);
+        }
+        const srtStat = srtPath ? await fsp.stat(srtPath).catch(() => null) : null;
+        if (srtPath && srtStat?.isFile()) {
+          captionInfoUrl = buildEmbeddedSubtitleUrl(options.publicBaseUrl, embeddedRootReal, srtPath, options.mediaSigningKey);
         }
       }
       await sendFileWithRange(request, reply, handle, stat, mimeTypeOf(target), captionInfoUrl);

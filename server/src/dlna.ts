@@ -616,8 +616,19 @@ export class DlnaService {
         ssdpSearch("ssdp:all", this.allowLoopback, this.allowCgnat),
       ]);
       const locations = Array.from(new Set(responses.flat())).slice(0, MAX_SSDP_LOCATIONS);
-      for (const location of locations) {
-        const info = await this.loadDevice(location);
+      // 串行等待 64 个不可达地址会让发现流程卡数分钟；限制并发但保持结果稳定。
+      const infos: Array<DlnaDeviceInfo | null> = new Array(locations.length).fill(null);
+      let nextIndex = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const index = nextIndex;
+          nextIndex += 1;
+          if (index >= locations.length) return;
+          infos[index] = await this.loadDevice(locations[index]);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, locations.length) }, worker));
+      for (const info of infos) {
         if (!info) continue;
         found.push(info);
         seenIds.add(info.id);
@@ -982,6 +993,11 @@ export class DlnaService {
       runtime.failures += 1;
       if (runtime.failures >= OFFLINE_FAILURE_LIMIT && runtime.online) {
         runtime.online = false;
+        // 电视断网/关机时没有机会上报 idle；主动转为 paused，避免播放队列永久停在 playing。
+        if (runtime.lastStatus?.state === "playing" || runtime.lastStatus?.state === "buffering") {
+          runtime.lastStatus = { ...runtime.lastStatus, state: "paused" };
+          this.onTvStatus?.(runtime.info.id, runtime.lastStatus);
+        }
         this.emitDevices();
       }
     } finally {

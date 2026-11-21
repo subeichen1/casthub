@@ -251,7 +251,7 @@ CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可�
 - 更新目标目录必须可写；把 `CastHub.exe` 放在 `Program Files` 等受保护目录时，Windows 可能拒绝替换，程序会提示「更新目标目录不可写」。
 - helper 使用 Windows 自带的 `powershell.exe`（PowerShell 5.1 即可），不依赖 PowerShell 7。
 - Release 必须同时提供 `CastHub.exe` 和 `checksums.txt`，且 `checksums.txt` 包含 `CastHub.exe` 的 SHA-256；否则检查更新会返回明确错误。
-- 如需额外校验 Authenticode 签名者，可在 `config.json` 的 `desktop.updateSignerSubject` 填写证书 Subject（支持 `*` 通配，例如 `CN=CastHub Development*`）。不配置时仍强制校验 SHA-256，只跳过签名者匹配。
+- 自动更新始终校验 Authenticode 签名者：默认 `desktop.updateSignerSubject` 为 `CN=CastHub Development*`（支持 `*` 通配）；使用其他发布证书时必须在 `config.json` 中改为对应 Subject，留空或主体不匹配都会拒绝更新。SHA-256 仍会同时强制校验。
 - 如需改用其他 GitHub 仓库，可在 `config.json` 中覆盖 `desktop.updateRepo`；更新资产地址始终来自该仓库 `releases/latest` 返回的 `assets`，且必须是 HTTPS。
 
 ```json
@@ -343,7 +343,7 @@ Samsung 场景还会在 `/media` 的 GET/HEAD 响应加 `CaptionInfo.sec: <完�
 
 控制台 DLNA 选项提供三种模式（默认 `auto`，仅 DLNA 设备使用）：
 
-- **自动（电视优先，`auto`）**：先探测视频内嵌字幕。存在任意内嵌字幕轨时，媒体 URL 带 `subtitles=0` 并让电视直接读取内嵌字幕，不再发外挂字幕，避免电视内嵌字幕和服务器外挂字幕叠成两层；没有内嵌字幕轨时才回退到同目录外挂字幕。若 ffprobe 不可用，中枢会提示「无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式」，此时不发送外挂字幕，但视频仍可播放。
+- **自动（电视优先，`auto`）**：先探测视频内嵌字幕。存在任意内嵌字幕轨时，媒体 URL 带 `subtitles=0` 并让电视直接读取内嵌字幕，不再发外挂字幕，避免电视内嵌字幕和服务器外挂字幕叠成两层；没有内嵌字幕轨时才回退到同目录外挂字幕。若 ffprobe 不可用，中枢会先回退到同目录外挂字幕；没有外挂字幕时才提示「无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式」，视频仍可播放。
 - **服务器字幕（`server`）**：中枢用 ffprobe 选择一条文本内嵌字幕（优先 default 非 forced、语言偏好、其他非 forced，最后 forced），用 ffmpeg 抽取 UTF-8 SRT，并生成仅含视频/音频、不重编码的去字幕副本；媒体 URL 指向副本，字幕 URL 指向 SRT。首次抽取或生成副本会等待，之后复用缓存。图片字幕（PGS/VobSub 等）不支持服务器模式，会明确报错且不投屏；无内嵌字幕轨时回退外挂字幕。服务器模式需要 ffmpeg 与 ffprobe，缺失时明确报错，不会降级为外挂。
 - **关闭（`off`）**：不发送任何字幕，媒体 URL 带 `subtitles=0`。
 

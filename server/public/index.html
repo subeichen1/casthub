@@ -357,14 +357,14 @@
       <details class="tv-desktop-steps">
         <summary>装指定版本 / 手动安装</summary>
         <div class="tv-desktop-row">
-          <input id="tvDesktopCustomUrl" type="text" placeholder="自定义 APK 地址（https://… 或 file://…）" />
+          <input id="tvDesktopCustomUrl" type="text" placeholder="自定义 APK 地址（仅支持 https://）" />
         </div>
         <div class="hint">留空则使用 GitHub 最新正式版。海信、TCL、小米等品牌还有额外系统设置，官方还原脚本见下方命令。</div>
         <div class="tv-desktop-row">
           <button id="tvDesktopCopyRestoreBtn" class="secondary small">复制官方还原命令</button>
         </div>
       </details>
-      <div class="hint">安装包不随 CastHub 分发，安装时从 GitHub 官方发布页（或官网镜像）下载并校验 SHA-256；adb 缺失时可点下方按钮查看下载地址。还原只做通用步骤，品牌定制项请用官方脚本。</div>
+      <div class="hint">安装包不随 CastHub 分发，安装时从 GitHub 官方发布页（或官网镜像）下载；提供 SHA-256 时强制校验，未提供时会在开始前要求确认来源可信。adb 缺失时可点下方按钮查看下载地址。还原只做通用步骤，品牌定制项请用官方脚本。</div>
       <div class="hint">面板会读取电视上已装的 Aerial 版本并提示是否有新版本（不会自动升级，重新一键安装即为升级）。「刷新」会绕过 10 分钟的发布信息缓存。</div>
       <div class="tv-desktop-row">
         <button id="tvDesktopPlatformToolsBtn" class="secondary small">adb 下载地址</button>

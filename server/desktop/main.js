@@ -20,7 +20,11 @@ const TRAY_ICON = path.join(__dirname, "assets", "icon-32.png");
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const UPDATE_LOG_PATH = path.join(os.tmpdir(), "casthub-update.log");
-const DEFAULT_DESKTOP_SETTINGS = { autoStart: false, updateRepo: "subeichen1/casthub", updateSignerSubject: "" };
+const DEFAULT_DESKTOP_SETTINGS = {
+  autoStart: false,
+  updateRepo: "subeichen1/casthub",
+  updateSignerSubject: "CN=CastHub Development*",
+};
 
 let mainWindow = null;
 let tray = null;
@@ -56,6 +60,9 @@ function logToFile(appRoot, message) {
     const logPath = path.join(appRoot, "casthub.log");
     try {
       if (fs.statSync(logPath).size >= MAX_LOG_BYTES) {
+        fs.rmSync(logPath + ".3", { force: true });
+        if (fs.existsSync(logPath + ".2")) fs.renameSync(logPath + ".2", logPath + ".3");
+        if (fs.existsSync(logPath + ".1")) fs.renameSync(logPath + ".1", logPath + ".2");
         fs.renameSync(logPath, logPath + ".1");
       }
     } catch {
@@ -117,7 +124,9 @@ function readDesktopSettings(appRoot) {
           ? desktop.updateRepo.trim()
           : DEFAULT_DESKTOP_SETTINGS.updateRepo,
       updateSignerSubject:
-        typeof desktop.updateSignerSubject === "string" ? desktop.updateSignerSubject.trim() : "",
+        typeof desktop.updateSignerSubject === "string" && desktop.updateSignerSubject.trim()
+          ? desktop.updateSignerSubject.trim()
+          : DEFAULT_DESKTOP_SETTINGS.updateSignerSubject,
     };
   } catch (error) {
     logToFile(appRoot, "DESKTOP_CONFIG_READ_FAILED " + (error && error.message ? error.message : String(error)));
@@ -129,7 +138,19 @@ function saveDesktopSettings(appRoot, patch) {
   const obj = readConfigObject(appRoot);
   const current = obj.desktop && typeof obj.desktop === "object" && !Array.isArray(obj.desktop) ? obj.desktop : {};
   obj.desktop = { ...current, ...patch };
-  fs.writeFileSync(configPath(appRoot), JSON.stringify(obj, null, 2) + "\n", "utf8");
+  const target = configPath(appRoot);
+  const temp = target + ".tmp-" + process.pid + "-" + Date.now();
+  try {
+    fs.writeFileSync(temp, JSON.stringify(obj, null, 2) + "\n", "utf8");
+    fs.renameSync(temp, target);
+  } catch (error) {
+    try {
+      fs.rmSync(temp, { force: true });
+    } catch {
+      // 清理临时文件失败不影响原配置。
+    }
+    throw error;
+  }
   return readDesktopSettings(appRoot);
 }
 
@@ -398,10 +419,16 @@ async function verifyAuthenticode(exePath, expectedSubject) {
   }
   const status = fields.STATUS || "";
   const subject = fields.SUBJECT || "";
+  const configuredSubject = String(expectedSubject || "").trim();
+  if (!configuredSubject) {
+    throw new Error("签名校验失败：未配置 desktop.updateSignerSubject");
+  }
+  // UnknownError 表示证书链不受信任（例如项目开发签名），只有签名者与配置主体完全匹配时才接受；
+  // 未配置主体时一律拒绝，避免退化成“只看哈希、不验证发布者”。
   if (status !== "Valid" && status !== "UnknownError") {
     throw new Error("签名校验失败：状态为 " + (status || "未知"));
   }
-  if (!wildcardMatch(subject, expectedSubject)) {
+  if (!wildcardMatch(subject, configuredSubject)) {
     throw new Error("签名校验失败：签名者 " + subject + " 与配置不匹配");
   }
 }
@@ -440,10 +467,8 @@ async function downloadAndVerifyUpdate() {
       throw new Error("CastHub.exe 的 SHA-256 校验失败");
     }
     const settings = readDesktopSettings(appRoot);
-    if (settings.updateSignerSubject) {
-      await verifyAuthenticode(exePath, settings.updateSignerSubject);
-    }
-    logToFile(appRoot, "UPDATE_VERIFY_OK sha256=" + actual + " signer=" + (settings.updateSignerSubject || "(skipped)"));
+    await verifyAuthenticode(exePath, settings.updateSignerSubject);
+    logToFile(appRoot, "UPDATE_VERIFY_OK sha256=" + actual + " signer=" + settings.updateSignerSubject);
     return { tempDir, exePath };
   } catch (error) {
     logToFile(appRoot, "UPDATE_VERIFY_FAILED " + (error && error.message ? error.message : String(error)));
@@ -643,6 +668,15 @@ async function boot() {
     await mainWindow.loadURL(mainWindowUrl);
     scheduleUpdateChecks(appRoot);
   } catch (error) {
+    // 服务已经启动但窗口加载失败时，必须回收后台服务，避免残留端口和进程。
+    if (serverHandle) {
+      try {
+        await serverHandle.close();
+      } catch (closeError) {
+        logToFile(appRoot, "启动失败后关闭服务异常: " + (closeError && closeError.message ? closeError.message : String(closeError)));
+      }
+      serverHandle = null;
+    }
     const message =
       error && error.code === "EADDRINUSE"
         ? "端口 " + port + " 被占用，请关闭占用程序后重试"

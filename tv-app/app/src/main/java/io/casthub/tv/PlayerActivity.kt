@@ -160,6 +160,7 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
     }
 
     override fun stop() {
+        pushStatus("idle")
         player.stop()
         finish()
     }
@@ -194,8 +195,7 @@ class PlayerActivity : AppCompatActivity(), TvWsServer.PlayerController {
                 return true
             }
             KeyEvent.KEYCODE_BACK -> {
-                player.stop()
-                finish()
+                stop()
                 return true
             }
         }

@@ -4,12 +4,18 @@ import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import org.java_websocket.WebSocket
 import org.java_websocket.handshake.ClientHandshake
 import org.java_websocket.server.WebSocketServer
 import java.net.InetSocketAddress
+import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
 
 /**
  * 电视端 WS 服务端（端口 9417）。
@@ -46,8 +52,10 @@ class TvWsServer(
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val authState = ConcurrentHashMap<WebSocket, Boolean>()
-    private val connections = ConcurrentHashMap.newKeySet<WebSocket>()
+    private val connections = Collections.newSetFromMap(ConcurrentHashMap<WebSocket, Boolean>())
     private val authFailures = ConcurrentHashMap<String, AuthFailure>()
+    private val challengeNonces = ConcurrentHashMap<WebSocket, String>()
+    private val secureRandom = SecureRandom()
     private var server: InnerServer? = null
     private var controller: PlayerController? = null
 
@@ -70,6 +78,7 @@ class TvWsServer(
         connections.clear()
         authState.clear()
         authFailures.clear()
+        challengeNonces.clear()
         if (inner != null) {
             try {
                 inner.stop(1000)
@@ -89,11 +98,20 @@ class TvWsServer(
         for ((conn, authenticated) in authState) {
             if (authenticated == true && conn.isOpen) {
                 try {
-                    conn.send(json)
+                    sendSafe(conn, json)
                 } catch (error: Exception) {
                     Log.w(TAG, "发送状态失败: ${error.message}")
                 }
             }
+        }
+    }
+
+    private fun sendSafe(conn: WebSocket, payload: String) {
+        if (!conn.isOpen) return
+        try {
+            conn.send(payload)
+        } catch (error: Exception) {
+            Log.w(TAG, "发送消息失败: ${error.message}")
         }
     }
 
@@ -113,7 +131,7 @@ class TvWsServer(
 
     private fun recordAuthFailure(key: String) {
         val now = System.currentTimeMillis()
-        val failure = authFailures.computeIfAbsent(key) { AuthFailure(0, now) }
+        val failure = authFailures[key] ?: AuthFailure(0, now).also { authFailures[key] = it }
         synchronized(failure) {
             if (now - failure.windowStart > AUTH_BLOCK_MS) {
                 failure.count = 0
@@ -138,6 +156,11 @@ class TvWsServer(
                 return
             }
             Log.i(TAG, "客户端接入: ${conn.remoteSocketAddress}")
+            val nonceBytes = ByteArray(16)
+            secureRandom.nextBytes(nonceBytes)
+            val nonce = Base64.encodeToString(nonceBytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            challengeNonces[conn] = nonce
+            sendSafe(conn, Protocol.challenge(nonce))
         }
 
         override fun onMessage(conn: WebSocket, message: String?) {
@@ -148,7 +171,7 @@ class TvWsServer(
             }
             val json = Protocol.parse(message)
             if (json == null) {
-                conn.send(Protocol.error("BAD_MESSAGE", "非法 JSON 消息"))
+                sendSafe(conn, Protocol.error("BAD_MESSAGE", "非法 JSON 消息"))
                 return
             }
             val type = json.optString("type", "")
@@ -163,12 +186,26 @@ class TvWsServer(
                 val incomingVersion = if (json.has("version")) json.optInt("version", -1) else Protocol.PROTOCOL_VERSION
                 if (incomingVersion != Protocol.PROTOCOL_VERSION) {
                     Log.w(TAG, "协议版本不兼容: $incomingVersion")
-                    conn.send(Protocol.error("VERSION_UNSUPPORTED", "协议版本不兼容"))
+                    sendSafe(conn, Protocol.error("VERSION_UNSUPPORTED", "协议版本不兼容"))
                     conn.close(4004, "protocol version unsupported")
                     return
                 }
+                val clientId = json.optString("clientId", "")
+                val proof = json.optString("proof", "")
+                val nonce = challengeNonces.remove(conn)
                 val incomingToken = json.optString("token", "")
-                if (incomingToken != token) {
+                val authenticated = when {
+                    proof.isNotEmpty() && !nonce.isNullOrEmpty() -> {
+                        val expected = deriveProof(token, nonce, clientId)
+                        MessageDigest.isEqual(expected.toByteArray(Charsets.UTF_8), proof.toByteArray(Charsets.UTF_8))
+                    }
+                    incomingToken.isNotEmpty() -> MessageDigest.isEqual(
+                        incomingToken.toByteArray(Charsets.UTF_8),
+                        token.toByteArray(Charsets.UTF_8)
+                    )
+                    else -> false
+                }
+                if (!authenticated) {
                     recordAuthFailure(key)
                     Log.w(TAG, "配对码错误，断开连接")
                     authState.remove(conn)
@@ -177,8 +214,8 @@ class TvWsServer(
                 }
                 authFailures.remove(key)
                 authState[conn] = true
-                Log.i(TAG, "配对成功 clientId=${json.optString("clientId")}")
-                conn.send(Protocol.helloAck("${Build.MANUFACTURER} ${Build.MODEL}"))
+                Log.i(TAG, "配对成功 clientId=$clientId")
+                sendSafe(conn, Protocol.helloAck("${Build.MANUFACTURER} ${Build.MODEL}"))
                 return
             }
 
@@ -195,11 +232,11 @@ class TvWsServer(
                         json.optString("mimeType", "")
                     )
                     if (!command.url.startsWith("http://") && !command.url.startsWith("https://")) {
-                        conn.send(Protocol.error("BAD_URL", "只允许 http/https 媒体地址"))
+                        sendSafe(conn, Protocol.error("BAD_URL", "只允许 http/https 媒体地址"))
                         return
                     }
                     if (command.title.length > 512 || command.mimeType.length > 128) {
-                        conn.send(Protocol.error("BAD_MESSAGE", "播放参数过长"))
+                        sendSafe(conn, Protocol.error("BAD_MESSAGE", "播放参数过长"))
                         return
                     }
                     mainHandler.post {
@@ -214,16 +251,25 @@ class TvWsServer(
                     mainHandler.post { controller?.seekTo(position) }
                 }
                 Protocol.TYPE_GET_STATUS -> mainHandler.post {
-                    conn.send(controller?.statusJson() ?: Protocol.status("idle", 0L, 0L))
+                    sendSafe(conn, controller?.statusJson() ?: Protocol.status("idle", 0L, 0L))
                 }
-                else -> conn.send(Protocol.error("UNKNOWN_TYPE", "未知消息类型: $type"))
+                else -> sendSafe(conn, Protocol.error("UNKNOWN_TYPE", "未知消息类型: $type"))
             }
         }
 
         override fun onClose(conn: WebSocket, code: Int, reason: String?, remote: Boolean) {
             authState.remove(conn)
+            challengeNonces.remove(conn)
             connections.remove(conn)
             Log.i(TAG, "连接关闭 code=$code reason=$reason")
+        }
+
+        /** PBKDF2-HMAC-SHA1 迭代 10 万次，和中枢 devices.ts 保持一致。 */
+        private fun deriveProof(pairingToken: String, nonce: String, clientId: String): String {
+            val salt = (nonce + ":" + clientId + ":" + Protocol.PROTOCOL_VERSION).toByteArray(Charsets.UTF_8)
+            val spec = PBEKeySpec(pairingToken.toCharArray(), salt, 100_000, 256)
+            val encoded = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1").generateSecret(spec).encoded
+            return Base64.encodeToString(encoded, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         }
 
         override fun onError(conn: WebSocket?, ex: Exception?) {

@@ -397,7 +397,7 @@ async function main() {
   writeProbeSidecar(autoExternal, []);
   fs.writeFileSync(path.join(mediaDir, "auto-external.srt"), "1\n00:00:01,000 --> 00:00:02,000\n自动外挂\n", "utf8");
   fs.writeFileSync(autoUnavailable + ".ffprobe-fail", "1");
-  fs.writeFileSync(path.join(mediaDir, "auto-unavailable.srt"), "1\n00:00:01,000 --> 00:00:02,000\n不可检测时也不应发外挂\n", "utf8");
+  fs.writeFileSync(path.join(mediaDir, "auto-unavailable.srt"), "1\n00:00:01,000 --> 00:00:02,000\n不可检测时回退外挂\n", "utf8");
   writeProbeSidecar(serverEmbedded, [
     { index: 0, codec_type: "video", codec_name: "h264" },
     textStream(2, "subrip", { tags: { language: "chi", title: "服务器内嵌" }, disposition: { default: 1 } })
@@ -460,19 +460,15 @@ async function main() {
   const autoExternalGet = await fake.waitFor(/^SUBTITLE_GET \[0\] 200 /, 5000, "auto 外挂字幕 GET 200");
   assert(autoExternalGet.includes("application/x-subrip"), "auto 外挂字幕 Content-Type 正确");
 
-  console.log("== 集成 3：auto ffprobe 不可用 → 提示且不发外挂 ==");
+  console.log("== 集成 3：auto ffprobe 不可用 → 回退外挂字幕 ==");
   await castAndWait(client, fake, device, "auto-unavailable.mp4", { subtitleMode: "auto" }, "auto 不可用");
-  const unavailableWarning = await client.waitFor(
-    (m) => m.type === "error" && m.message === "无法检测内嵌字幕，请安装 ffmpeg/ffprobe，或改用服务器字幕模式",
-    5000,
-    "auto ffprobe 不可用提示"
-  );
-  assert.ok(unavailableWarning.message.includes("无法检测内嵌字幕"), "auto 不可用提示文本正确");
-  const unavailableCount = await fake.waitFor(/^SUBTITLE_URL_COUNT /, 5000, "auto 不可用字幕数量");
-  assertCount(unavailableCount, 0, "auto 不可用");
-  const unavailableProbeLine = await fake.waitFor(/^MEDIA_PROBE 206 /, 5000, "auto 不可用媒体探测");
-  assert(unavailableProbeLine.includes("subtitles=0"), "auto 不可用媒体 URL 带 subtitles=0");
-  assert(!fake.lines.some((line) => line.startsWith("SUBTITLE_GET")), "auto 不可用未请求外挂字幕");
+  const unavailableCount = await fake.waitFor(/^SUBTITLE_URL_COUNT /, 5000, "auto 不可用回退外挂数量");
+  assertCount(unavailableCount, 1, "auto 不可用回退外挂");
+  const unavailableDidlLine = await fake.waitFor(/^DIDL_RECEIVED /, 5000, "auto 不可用 DIDL");
+  const unavailableDidl = unavailableDidlLine.replace(/^DIDL_RECEIVED /, "");
+  assert(unavailableDidl.includes("CaptionInfoEx"), "auto 不可用 DIDL 含 CaptionInfoEx");
+  const unavailableGet = await fake.waitFor(/^SUBTITLE_GET \[0\] 200 /, 5000, "auto 不可用字幕 GET 200");
+  assert(unavailableGet.includes("application/x-subrip"), "auto 不可用字幕 Content-Type 正确");
 
   console.log("== 集成 4：server 内嵌 → 抽取 SRT + 去字幕副本 + 两条签名 URL ==");
   await castAndWait(client, fake, device, "server-embedded.mp4", { subtitleMode: "server" }, "server 内嵌");

@@ -7,6 +7,7 @@ object Protocol {
     const val PROTOCOL_VERSION = 1
     const val TYPE_HELLO = "hello"
     const val TYPE_HELLO_ACK = "helloAck"
+    const val TYPE_CHALLENGE = "challenge"
     const val TYPE_PLAY = "play"
     const val TYPE_PAUSE = "pause"
     const val TYPE_RESUME = "resume"
@@ -15,6 +16,11 @@ object Protocol {
     const val TYPE_GET_STATUS = "getStatus"
     const val TYPE_STATUS = "status"
     const val TYPE_ERROR = "error"
+
+    fun challenge(nonce: String): String = JSONObject().apply {
+        put("type", TYPE_CHALLENGE)
+        put("nonce", nonce)
+    }.toString()
 
     fun helloAck(deviceName: String): String = JSONObject().apply {
         put("type", TYPE_HELLO_ACK)

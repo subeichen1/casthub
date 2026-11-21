@@ -73,7 +73,7 @@ CastHub 是家庭局域网内的单用户投屏工具，不是公网服务，也
 
 发布前必须满足：
 
-1. Windows `CastHub.exe` 通过 Authenticode 校验（`Get-AuthenticodeSignature` 为 `Valid`）。
+1. Windows `CastHub.exe` 通过 Authenticode 校验（`Get-AuthenticodeSignature` 为 `Valid`；开发自签名测试版可为 `UnknownError`，但签名主体必须与 `desktop.updateSignerSubject` / 安装器 `-SignerSubject` 匹配）。
 2. Android APK 使用 release keystore 签名，禁止发布 `app-debug.apk`。
 3. Release 附带 `checksums.txt`，安装脚本默认校验 SHA-256；无校验和时必须显式 `-AllowUnsigned` / `CASTHUB_ALLOW_UNVERIFIED=1`。
 4. CI 的 `npm audit --audit-level=high` 通过；SBOM 作为构建产物保留。
