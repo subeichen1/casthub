@@ -2,6 +2,8 @@
 
 > **发布状态（2026-11-14）**：已通过已登录 GitHub 的浏览器完成实际发布 —— <https://github.com/subeichen1/casthub>，发布时 main HEAD `80b8961`，GitHub Actions “CI” 首轮 `success`。**该历史 Release 的 `app-debug.apk` 是未签名调试包，已不符合当前发布基线；请使用 `.github/workflows/release.yml` 重新构建并发布已签名的 `CastHub-TV.apk`。** 本文保留为发布流程参考。
 >
+> **v0.2.3 状态（2026-11-21）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.3>（release id `453411144`）。Release workflow run `44860704317` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,658,288 字节）、`CastHub-TV.apk`（1,824,664 字节）、`casthub-src.tar.gz`（2,044,250 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `bc1ca1a`，CI run `44860691609` 为 `success`。首轮 tag `e6ed699` 的 Release run `44857245325` 因 Windows runner 的 `TEMP` 为 8.3 短名（`RUNNER~1`）导致 e2e 历史路径比较失配而失败，已在 `bc1ca1a` 修正测试并重新打 tag。
+>
 > **v0.2.2 状态（2026-11-20）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.2>（release id `452814340`）。Release workflow run `44756147441` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,643,992 字节）、`CastHub-TV.apk`（1,824,060 字节）、`casthub-src.tar.gz`（2,038,637 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `9ecddb4`，CI run `44755729080` 为 `success`。
 >
 > **v0.2.1 状态（2026-11-16）**：已发布 <https://github.com/subeichen1/casthub/releases/tag/v0.2.1>（release id `447082839`）。Release workflow run `43875933408` 的 windows / android / source / publish 四个 job 全部 `success`；资产 `CastHub.exe`（119,632,872 字节）、`CastHub-TV.apk`（1,824,063 字节）、`casthub-src.tar.gz`（2,013,622 字节）、`checksums.txt`（244 字节）均已上传。发布提交 `49765b5`，CI run `43875910909` 为 `success`。
