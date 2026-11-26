@@ -188,8 +188,8 @@
     .tv-desktop-meta { color: var(--muted); font-size: 11px; line-height: 1.6; margin-top: 8px; word-break: break-all; }
     .tv-desktop-meta code { font-family: Consolas, monospace; color: #cbd5e1; }
     .tv-desktop-meta code.update { color: var(--cyan); }
-    .tv-desktop-actions { display: flex; gap: 8px; margin-top: 12px; }
-    .tv-desktop-actions button { flex: 1; padding: 8px 10px; font-size: 12px; }
+    .tv-desktop-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+    .tv-desktop-actions button { flex: 1 1 0; min-width: 0; padding: 8px 10px; font-size: 12px; line-height: 1.35; white-space: normal; word-break: break-word; }
     .tv-desktop-progress { height: 6px; border-radius: 999px; background: #0d1728; margin-top: 10px; overflow: hidden; }
     .tv-desktop-progress[hidden] { display: none; }
     .tv-desktop-progress span { display: block; height: 100%; width: 0; background: var(--blue); transition: width 0.2s ease; }
@@ -338,29 +338,6 @@
       <div class="hint">仅桌面版显示。portable 版开启自启后请勿移动 exe，移动后启动项会失效。</div>
     </section>
 
-    <section id="networkSettingsPanel" class="panel" hidden>
-      <div class="panel-head">
-        <h2>网络设置</h2>
-        <span id="networkEnvHint" class="desktop-version"></span>
-      </div>
-      <div class="network-settings-grid">
-        <label for="networkProxy">HTTP(S) 代理</label>
-        <input id="networkProxy" type="text" autocomplete="off" placeholder="http://127.0.0.1:7890（留空直连；支持系统代理环境变量）" />
-        <label for="networkGithubMirror">GitHub 镜像</label>
-        <input id="networkGithubMirror" type="text" autocomplete="off" placeholder="https://ghproxy.example.com（留空不使用）" />
-        <label for="networkCatalogUrl">目录地址</label>
-        <input id="networkCatalogUrl" type="text" autocomplete="off" placeholder="留空使用默认 catalog-data 地址" />
-        <label for="networkGithubToken">GitHub Token</label>
-        <input id="networkGithubToken" type="password" autocomplete="off" placeholder="留空保持不变" />
-      </div>
-      <label class="network-clear-token"><input id="networkClearGithubToken" type="checkbox" /> 清除已保存的 GitHub Token</label>
-      <div class="network-settings-actions">
-        <button id="networkSaveBtn" class="secondary small">保存网络设置</button>
-        <span id="networkSettingsStatus" class="hint"></span>
-      </div>
-      <div class="hint">用于拉取 GitHub Releases 与下载 APK。令牌不会回传到浏览器或写入日志；镜像仅适用于 GitHub 域名且仅在校验 SHA-256 时启用。环境变量（CASTHUB_PROXY / CASTHUB_GITHUB_MIRROR / CASTHUB_GITHUB_TOKEN / CASTHUB_CATALOG_URL）优先于此处配置。</div>
-    </section>
-
     <section id="tvDesktopPanel" class="panel" hidden>
       <div class="panel-head">
         <h2>电视助手</h2>
@@ -460,6 +437,28 @@
         <button id="queueClearBtn" class="secondary" disabled>清空</button>
       </div>
       <div class="hint">仅 DLNA 设备支持排队；自动连播由服务器执行，关闭或刷新页面不影响。</div>
+    </section>
+    <section id="networkSettingsPanel" class="panel" hidden>
+      <div class="panel-head">
+        <h2>网络设置</h2>
+        <span id="networkEnvHint" class="desktop-version"></span>
+      </div>
+      <div class="network-settings-grid">
+        <label for="networkProxy">HTTP(S) 代理</label>
+        <input id="networkProxy" type="text" autocomplete="off" placeholder="http://127.0.0.1:7890（留空直连；支持系统代理环境变量）" />
+        <label for="networkGithubMirror">GitHub 镜像</label>
+        <input id="networkGithubMirror" type="text" autocomplete="off" placeholder="https://ghproxy.example.com（留空不使用）" />
+        <label for="networkCatalogUrl">目录地址</label>
+        <input id="networkCatalogUrl" type="text" autocomplete="off" placeholder="留空使用默认 catalog-data 地址" />
+        <label for="networkGithubToken">GitHub Token</label>
+        <input id="networkGithubToken" type="password" autocomplete="off" placeholder="留空保持不变" />
+      </div>
+      <label class="network-clear-token"><input id="networkClearGithubToken" type="checkbox" /> 清除已保存的 GitHub Token</label>
+      <div class="network-settings-actions">
+        <button id="networkSaveBtn" class="secondary small">保存网络设置</button>
+        <span id="networkSettingsStatus" class="hint"></span>
+      </div>
+      <div class="hint">用于拉取 GitHub Releases 与下载 APK。令牌不会回传到浏览器或写入日志；镜像仅适用于 GitHub 域名且仅在校验 SHA-256 时启用。环境变量（CASTHUB_PROXY / CASTHUB_GITHUB_MIRROR / CASTHUB_GITHUB_TOKEN / CASTHUB_CATALOG_URL）优先于此处配置。</div>
     </section>
     </div>
   </main>
