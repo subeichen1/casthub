@@ -37,6 +37,8 @@ jobs:
             mkdir catalog-data
             git -C catalog-data init -q
             git -C catalog-data remote add origin "$(git remote get-url origin)"
+            # actions/checkout stores its auth header in the main worktree config; copy it so the orphan repo can push.
+            git -C catalog-data config --local http.https://github.com/.extraheader "$(git config --get http.https://github.com/.extraheader)"
             git -C catalog-data checkout --orphan catalog-data
           fi
 
