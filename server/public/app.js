@@ -1094,6 +1094,10 @@
   }
 
   function applyTvDesktopInfo(msg) {
+    // 应用/变体切换会并发发多个 getDesktopInfo，响应可能乱序返回。
+    // 丢弃与当前选择不一致的旧响应，否则面板信息会和下拉框错位（例如选中 TVBox 却显示红果的版本）。
+    if (state.tvDesktopAppId && msg.activeAppId && msg.activeAppId !== state.tvDesktopAppId) return;
+    if (state.tvDesktopVariantId && msg.variantId && msg.variantId !== state.tvDesktopVariantId) return;
     state.tvDesktop = msg;
     if (msg.activeAppId) state.tvDesktopAppId = msg.activeAppId;
     if (msg.variantId) state.tvDesktopVariantId = msg.variantId;
