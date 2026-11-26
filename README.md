@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.3.1**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.3.2**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -248,11 +248,13 @@ portable 版请慎开：启动项指向 exe 当前路径，移动或删除 exe�
 
 ### 自动更新（Windows portable）
 
-CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。内置默认更新仓库为 `subeichen1/casthub`，所有用户无需额外配置即可检查 GitHub Releases；程序读取 `releases/latest`，将 `tag_name` 与当前三段版本号比较，发现新版本会发系统通知，并在桌面设置面板和托盘菜单显示「立即更新」。
+CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。内置默认更新仓库为 `subeichen1/casthub`，所有用户无需额外配置即可检查 GitHub Releases；程序优先读取 GitHub API `releases/latest`，将 `tag_name` 与当前三段版本号比较；API 限流（403）或不可用时自动改用 GitHub 官方 `releases.atom`，再失败则解析 `releases/latest` 的 302 跳转得到版本号。发现新版本会发系统通知，并在桌面设置面板和托盘菜单显示「立即更新」。
 
 点击「立即更新」后，桌面设置面板会依次显示下载进度「正在下载 42%」、校验状态「正在校验…」和安装状态「正在安装，应用即将重启…」。整个流程不打开浏览器、不跳转 GitHub 页面，也不需要手动下载或替换文件。程序只使用 GitHub Release `assets` 里的 `CastHub.exe` 与 `checksums.txt`，强制核对 `CastHub.exe` 的 SHA-256；缺少任一资产、下载失败或哈希不匹配都会中止更新并保留现有 exe。更新 helper 会等待旧进程退出，并在外层 portable 进程释放文件锁后重试替换，再把新版本启动起来。
 
 从 v0.3.1 起，自动更新会复用「网络设置」中的代理、GitHub 镜像与 GitHub Token：检查更新和下载资产都可走 `network.proxy`；`network.githubToken` 仅发送给 `api.github.com`；`CastHub.exe` 仅在 `checksums.txt` 提供合法 SHA-256 时才启用 `network.githubMirror`，`checksums.txt` 本身始终从 GitHub 原始地址获取。下载支持同源断点续传与多源自动回退，缓存文件位于 `update-cache/CastHub-<tag>.exe`。
+
+从 v0.3.2 起，检查更新遇到 GitHub API 403/限流会自动切换 `releases.atom` 和 `releases/latest` 重定向；配置了代理时，所有下载线路失败后还会尝试电脑默认直连线路。全部线路均失败时，界面会提示检查网络，或开启系统代理 / TUN 代理（节点）后重试。
 
 > **旧版本限制**：v0.2.0 及更早版本没有自动更新器，第一次必须从 Releases 页面手动下载并安装 v0.2.1 或更高版本；从包含自动更新器的版本开始，之后才能在应用内一键更新。
 
@@ -262,7 +264,7 @@ CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可�
 - helper 使用 Windows 自带的 `powershell.exe`（PowerShell 5.1 即可），不依赖 PowerShell 7。
 - Release 必须同时提供 `CastHub.exe` 和 `checksums.txt`，且 `checksums.txt` 包含 `CastHub.exe` 的 SHA-256；否则检查更新会返回明确错误。
 - 自动更新始终校验 Authenticode 签名者：默认 `desktop.updateSignerSubject` 为 `CN=CastHub Development*`（支持 `*` 通配）；使用其他发布证书时必须在 `config.json` 中改为对应 Subject，留空或主体不匹配都会拒绝更新。SHA-256 仍会同时强制校验。
-- 如需改用其他 GitHub 仓库，可在 `config.json` 中覆盖 `desktop.updateRepo`；更新资产地址始终来自该仓库 `releases/latest` 返回的 `assets`，且必须是 HTTPS。
+- 如需改用其他 GitHub 仓库，可在 `config.json` 中覆盖 `desktop.updateRepo`；更新资产地址优先来自该仓库 `releases/latest` 返回的 `assets`，备用线路按 tag 拼接 GitHub Release 资产地址；两者都必须是 HTTPS。
 
 ```json
 {

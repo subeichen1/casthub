@@ -1,17 +1,14 @@
-// CastHub portable 自动更新工具函数：只使用 Node 内置模块，方便独立测试。
+// CastHub portable 自动更新工具函数：仅使用 Node 内置模块与 fast-xml-parser，方便独立测试。
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
+const { XMLParser } = require("fast-xml-parser");
 
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 const DOWNLOAD_HEADER_TIMEOUT_MS = 15 * 1000;
 const DOWNLOAD_IDLE_TIMEOUT_MS = 30 * 1000;
 const MAX_UPDATE_BYTES = 350 * 1024 * 1024;
-const GITHUB_DOWNLOAD_HOSTS = new Set([
-  "github.com",
-  "raw.githubusercontent.com",
-  "objects.githubusercontent.com",
-]);
+const GITHUB_DOWNLOAD_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"]);
 
 function isHttpsUrl(value) {
   if (typeof value !== "string") return false;
@@ -27,12 +24,16 @@ function allowInsecureLoopback() {
 }
 
 function isLoopbackHostname(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  const host = String(hostname || "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
   return host === "127.0.0.1" || host === "::1" || host === "localhost";
 }
 
 function isPrivateHostname(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
+  const host = String(hostname || "")
+    .replace(/^\[|\]$/g, "")
+    .toLowerCase();
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (
     host.endsWith(".local") ||
@@ -100,7 +101,10 @@ function isGitHubDownloadUrl(value) {
 }
 
 function normalizeSha256(value) {
-  const text = String(value == null ? "" : value).trim().replace(/^sha256:/i, "").toLowerCase();
+  const text = String(value == null ? "" : value)
+    .trim()
+    .replace(/^sha256:/i, "")
+    .toLowerCase();
   return /^[a-f0-9]{64}$/.test(text) ? text : "";
 }
 
@@ -131,9 +135,7 @@ function pickUpdateAssets(assets) {
   const list = Array.isArray(assets) ? assets : [];
   const findAsset = (name) => {
     const normalized = name.toLowerCase();
-    return list.find(
-      (asset) => asset && typeof asset.name === "string" && asset.name.toLowerCase() === normalized,
-    );
+    return list.find((asset) => asset && typeof asset.name === "string" && asset.name.toLowerCase() === normalized);
   };
   const exe = findAsset("CastHub.exe");
   const checksum = findAsset("checksums.txt");
@@ -149,6 +151,133 @@ function pickUpdateAssets(assets) {
     checksumUrl,
     exeSize: Number.isFinite(size) && size > 0 ? size : 0,
   };
+}
+
+/**
+ * 规范化 GitHub 仓库标识：支持 owner/repo 与 https://github.com/owner/repo。
+ * 非 github.com 的自定义更新地址返回空字符串，不参与备用线路。
+ */
+function normalizeRepoSlug(value) {
+  const text = String(value == null ? "" : value)
+    .trim()
+    .replace(/^\/+|\/+$/g, "");
+  if (/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)) return text;
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== "https:" || parsed.hostname.toLowerCase() !== "github.com") return "";
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length >= 2 && /^[A-Za-z0-9_.-]+$/.test(parts[0]) && /^[A-Za-z0-9_.-]+$/.test(parts[1])) {
+      return parts[0] + "/" + parts[1];
+    }
+  } catch {
+    // 普通 owner/repo 已在上面处理，非法 URL 直接返回空。
+  }
+  return "";
+}
+
+/** 从 GitHub Releases 页面 URL 或 Location 中提取 tag。 */
+function parseReleaseTagFromUrl(value) {
+  try {
+    const parsed = new URL(String(value == null ? "" : value));
+    const match = /\/releases\/tag\/([^/?#]+)/i.exec(parsed.pathname);
+    return match ? decodeURIComponent(match[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 解析 GitHub releases.atom，返回第一条 release 的 tag。 */
+function parseAtomLatestTag(xml) {
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
+  const parsed = parser.parse(String(xml == null ? "" : xml));
+  const feed = parsed && parsed.feed ? parsed.feed : parsed;
+  const rawEntries = feed && feed.entry;
+  const entries = Array.isArray(rawEntries) ? rawEntries : rawEntries ? [rawEntries] : [];
+  for (const entry of entries) {
+    const rawLinks = entry && entry.link;
+    const links = Array.isArray(rawLinks) ? rawLinks : rawLinks ? [rawLinks] : [];
+    for (const link of links) {
+      const rel = link && link["@_rel"];
+      const href = link && link["@_href"];
+      if (rel === "alternate" && typeof href === "string") {
+        const tag = parseReleaseTagFromUrl(href);
+        if (tag) return tag;
+      }
+    }
+  }
+  throw new Error("Releases Atom 中没有找到版本标签");
+}
+
+/** 由 tag 拼出与 GitHub Release API 兼容的 CastHub 资产结构。 */
+function buildReleaseInfoFromTag(repo, tag) {
+  const slug = normalizeRepoSlug(repo);
+  if (!slug) throw new Error("更新仓库不是有效的 GitHub owner/repo");
+  const cleanTag = String(tag == null ? "" : tag).trim();
+  if (!cleanTag || /[?#]/.test(cleanTag)) throw new Error("Release 版本标签不合法");
+  const base = "https://github.com/" + slug + "/releases/download/" + encodeURIComponent(cleanTag);
+  return {
+    tag_name: cleanTag,
+    assets: [
+      { name: "CastHub.exe", browser_download_url: base + "/CastHub.exe", size: 0 },
+      { name: "checksums.txt", browser_download_url: base + "/checksums.txt", size: 0 },
+    ],
+  };
+}
+
+/**
+ * GitHub API 不可用时的版本信息兜底：
+ * 1) GitHub 官方 releases.atom（不消耗 API 配额）；
+ * 2) GitHub /releases/latest 的 302 Location（不消耗 API 配额）。
+ * 只访问 github.com，不把 token 发给第三方，也不把镜像当元数据源。
+ */
+async function fetchLatestReleaseFallback(fetcher, repo, options = {}) {
+  const slug = normalizeRepoSlug(repo);
+  if (!slug) throw new Error("更新仓库不是有效的 GitHub owner/repo");
+  const doFetch = typeof fetcher === "function" ? fetcher : globalThis.fetch;
+  if (typeof doFetch !== "function") throw new Error("当前环境不支持 fetch，无法检查更新");
+  const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? options.timeoutMs : 10000;
+  const request = (url, extra) =>
+    doFetch(url, {
+      ...extra,
+      signal: options.signal || AbortSignal.timeout(timeoutMs),
+    });
+  const errors = [];
+  const messageOf = (error) => (error && error.message ? error.message : String(error));
+
+  try {
+    const response = await request("https://github.com/" + slug + "/releases.atom", {
+      redirect: "follow",
+      headers: {
+        Accept: "application/atom+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": "CastHub",
+      },
+    });
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    const tag = parseAtomLatestTag(await response.text());
+    return { tag, source: "atom", release: buildReleaseInfoFromTag(slug, tag) };
+  } catch (error) {
+    errors.push("releases.atom：" + messageOf(error));
+  }
+
+  try {
+    const latestUrl = "https://github.com/" + slug + "/releases/latest";
+    const response = await request(latestUrl, {
+      redirect: "manual",
+      headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "CastHub" },
+    });
+    let tag = "";
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (location) tag = parseReleaseTagFromUrl(new URL(location, latestUrl).href);
+    }
+    if (!tag && response.url) tag = parseReleaseTagFromUrl(response.url);
+    if (!tag) throw new Error("HTTP " + response.status + " 且未找到版本跳转");
+    return { tag, source: "redirect", release: buildReleaseInfoFromTag(slug, tag) };
+  } catch (error) {
+    errors.push("releases/latest：" + messageOf(error));
+  }
+
+  throw new Error("备用更新线路均失败：" + errors.join("；"));
 }
 
 /** 用流式计算文件 SHA-256。 */
@@ -386,7 +515,8 @@ async function downloadOnce(candidate, destination, options, onProgress) {
  * 兼容旧调用：第三个参数可以是 onProgress 函数。
  */
 async function downloadFile(url, destination, optionsOrProgress) {
-  const options = typeof optionsOrProgress === "function" ? { onProgress: optionsOrProgress } : { ...(optionsOrProgress || {}) };
+  const options =
+    typeof optionsOrProgress === "function" ? { onProgress: optionsOrProgress } : { ...(optionsOrProgress || {}) };
   const fetcher = typeof options.fetcher === "function" ? options.fetcher : globalThis.fetch;
   if (typeof fetcher !== "function") throw new Error("当前环境不支持 fetch，无法下载更新");
   const expectedSha = normalizeSha256(options.expectedSha256);
@@ -408,17 +538,23 @@ async function downloadFile(url, destination, optionsOrProgress) {
 
   // 只有拿到可信 SHA-256（或调用方显式信任无哈希镜像）时才允许启用第三方镜像；
   // 校验文件本身必须优先来自原始 GitHub。
-  const mirrorOptions = expectedSha || options.allowMirrorWithoutSha ? options : { ...options, githubMirror: "", mirrors: [] };
+  const mirrorOptions =
+    expectedSha || options.allowMirrorWithoutSha ? options : { ...options, githubMirror: "", mirrors: [] };
   const candidates = buildDownloadCandidates(url, mirrorOptions);
   const errors = [];
   for (const candidate of candidates) {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const result = await downloadOnce(candidate, destination, {
-          ...options,
-          fetcher,
-          expectedSha256: expectedSha,
-        }, options.onProgress);
+        const result = await downloadOnce(
+          candidate,
+          destination,
+          {
+            ...options,
+            fetcher,
+            expectedSha256: expectedSha,
+          },
+          options.onProgress,
+        );
         if (expectedSha) {
           const actual = await sha256File(destination);
           if (actual.toLowerCase() !== expectedSha) {
@@ -460,51 +596,51 @@ async function downloadFile(url, destination, optionsOrProgress) {
  */
 function buildUpdateHelperScript() {
   return [
-    'param(',
-    '  [Parameter(Mandatory=$true)][string]$Target,',
-    '  [Parameter(Mandatory=$true)][string]$Source,',
-    '  [Parameter(Mandatory=$true)][int]$ParentPid,',
-    '  [Parameter(Mandatory=$true)][string]$LogPath',
-    ')',
+    "param(",
+    "  [Parameter(Mandatory=$true)][string]$Target,",
+    "  [Parameter(Mandatory=$true)][string]$Source,",
+    "  [Parameter(Mandatory=$true)][int]$ParentPid,",
+    "  [Parameter(Mandatory=$true)][string]$LogPath",
+    ")",
     '$ErrorActionPreference = "Continue"',
-    'function Write-Log([string]$Message) {',
+    "function Write-Log([string]$Message) {",
     '  try { Add-Content -LiteralPath $LogPath -Value ((Get-Date).ToString("s") + " " + $Message) -Encoding ASCII } catch { }',
-    '}',
+    "}",
     'Write-Log "HELPER_START target=$Target source=$Source parent=$ParentPid"',
-    '$parentDeadline = (Get-Date).AddSeconds(30)',
-    'while ((Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $parentDeadline)) { Start-Sleep -Milliseconds 200 }',
+    "$parentDeadline = (Get-Date).AddSeconds(30)",
+    "while ((Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $parentDeadline)) { Start-Sleep -Milliseconds 200 }",
     'if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) { Write-Log "PARENT_STILL_RUNNING" } else { Write-Log "PARENT_EXITED" }',
     '$oldTarget = $Target + ".old"',
-    '$deadline = (Get-Date).AddSeconds(120)',
-    'while ((Get-Date) -lt $deadline) {',
-    '  $moved = $false',
-    '  try {',
-    '    if (Test-Path -LiteralPath $oldTarget) { Remove-Item -LiteralPath $oldTarget -Force -ErrorAction Stop }',
-    '    if (Test-Path -LiteralPath $Target) {',
-    '      Rename-Item -LiteralPath $Target -NewName (Split-Path -Path $oldTarget -Leaf) -Force -ErrorAction Stop',
-    '      $moved = $true',
+    "$deadline = (Get-Date).AddSeconds(120)",
+    "while ((Get-Date) -lt $deadline) {",
+    "  $moved = $false",
+    "  try {",
+    "    if (Test-Path -LiteralPath $oldTarget) { Remove-Item -LiteralPath $oldTarget -Force -ErrorAction Stop }",
+    "    if (Test-Path -LiteralPath $Target) {",
+    "      Rename-Item -LiteralPath $Target -NewName (Split-Path -Path $oldTarget -Leaf) -Force -ErrorAction Stop",
+    "      $moved = $true",
     '      Write-Log ("MOVE_OK target=" + $Target)',
-    '    }',
-    '    Copy-Item -LiteralPath $Source -Destination $Target -Force -ErrorAction Stop',
+    "    }",
+    "    Copy-Item -LiteralPath $Source -Destination $Target -Force -ErrorAction Stop",
     '    Write-Log ("COPY_OK target=" + $Target)',
-    '    Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target)',
+    "    Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target)",
     '    Write-Log ("START_OK target=" + $Target)',
     '    Write-Log "UPDATE_OK target=$Target"',
-    '    exit 0',
-    '  } catch {',
+    "    exit 0",
+    "  } catch {",
     '    Write-Log ("RETRY_FAILED " + $_.Exception.Message)',
-    '    if ($moved -and (Test-Path -LiteralPath $oldTarget)) {',
-    '      try {',
-    '        if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Force -ErrorAction Stop }',
-    '        Rename-Item -LiteralPath $oldTarget -NewName (Split-Path -Path $Target -Leaf) -Force -ErrorAction Stop',
+    "    if ($moved -and (Test-Path -LiteralPath $oldTarget)) {",
+    "      try {",
+    "        if (Test-Path -LiteralPath $Target) { Remove-Item -LiteralPath $Target -Force -ErrorAction Stop }",
+    "        Rename-Item -LiteralPath $oldTarget -NewName (Split-Path -Path $Target -Leaf) -Force -ErrorAction Stop",
     '        Write-Log "ROLLBACK_OK"',
     '      } catch { Write-Log ("ROLLBACK_FAILED " + $_.Exception.Message) }',
-    '    }',
-    '    Start-Sleep -Milliseconds 500',
-    '  }',
-    '}',
+    "    }",
+    "    Start-Sleep -Milliseconds 500",
+    "  }",
+    "}",
     'Write-Log "UPDATE_FAILED target=$Target"',
-    'exit 1',
+    "exit 1",
   ].join("\r\n");
 }
 
@@ -523,6 +659,11 @@ module.exports = {
   isAllowedDownloadUrl,
   isGitHubDownloadUrl,
   normalizeSha256,
+  normalizeRepoSlug,
+  parseReleaseTagFromUrl,
+  parseAtomLatestTag,
+  buildReleaseInfoFromTag,
+  fetchLatestReleaseFallback,
   buildMirrorUrl,
   buildDownloadCandidates,
   parseChecksums,

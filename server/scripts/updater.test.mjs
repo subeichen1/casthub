@@ -11,7 +11,12 @@ const require = createRequire(import.meta.url);
 const {
   buildDownloadCandidates,
   buildMirrorUrl,
+  buildReleaseInfoFromTag,
   buildUpdateHelperScript,
+  fetchLatestReleaseFallback,
+  normalizeRepoSlug,
+  parseAtomLatestTag,
+  parseReleaseTagFromUrl,
   downloadFile,
   isAllowedDownloadUrl,
   normalizeSha256,
@@ -59,17 +64,11 @@ test("pickUpdateAssets finds case-insensitive assets and size", () => {
 test("pickUpdateAssets rejects missing exe or checksums", () => {
   assert.throws(() => pickUpdateAssets([]), /Release 缺少 CastHub.exe 或 checksums.txt/);
   assert.throws(
-    () =>
-      pickUpdateAssets([
-        { name: "CastHub.exe", browser_download_url: "https://github.com/x/CastHub.exe" },
-      ]),
+    () => pickUpdateAssets([{ name: "CastHub.exe", browser_download_url: "https://github.com/x/CastHub.exe" }]),
     /Release 缺少 CastHub.exe 或 checksums.txt/,
   );
   assert.throws(
-    () =>
-      pickUpdateAssets([
-        { name: "checksums.txt", browser_download_url: "https://github.com/x/checksums.txt" },
-      ]),
+    () => pickUpdateAssets([{ name: "checksums.txt", browser_download_url: "https://github.com/x/checksums.txt" }]),
     /Release 缺少 CastHub.exe 或 checksums.txt/,
   );
 });
@@ -85,6 +84,52 @@ test("sha256File matches crypto hash", async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("GitHub fallback parses releases.atom and release redirect", async () => {
+  const atom = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<feed xmlns="http://www.w3.org/2005/Atom">',
+    '<entry><title>v9</title><link rel="alternate" type="text/html" href="https://github.com/acme/app/releases/tag/v9.0.0"/></entry>',
+    '<entry><title>v8</title><link rel="alternate" type="text/html" href="https://github.com/acme/app/releases/tag/v8.0.0"/></entry>',
+    "</feed>",
+  ].join("");
+  assert.equal(parseAtomLatestTag(atom), "v9.0.0");
+  assert.equal(parseReleaseTagFromUrl("https://github.com/acme/app/releases/tag/v1.2.3"), "v1.2.3");
+  assert.equal(normalizeRepoSlug("https://github.com/acme/app/releases/latest"), "acme/app");
+  assert.equal(normalizeRepoSlug("https://gitlab.com/acme/app"), "");
+  assert.deepEqual(
+    buildReleaseInfoFromTag("acme/app", "v1.2.3").assets.map((asset) => asset.name),
+    ["CastHub.exe", "checksums.txt"],
+  );
+
+  const atomCalls = [];
+  const atomResult = await fetchLatestReleaseFallback(async (url, init) => {
+    atomCalls.push({ url: String(url), redirect: init.redirect });
+    return new Response(atom, { status: 200, headers: { "content-type": "application/atom+xml" } });
+  }, "acme/app");
+  assert.equal(atomResult.source, "atom");
+  assert.equal(atomResult.tag, "v9.0.0");
+  assert.equal(atomCalls.length, 1);
+  assert.match(atomCalls[0].url, /\/releases\.atom$/);
+
+  const redirectCalls = [];
+  const redirectResult = await fetchLatestReleaseFallback(async (url, init) => {
+    redirectCalls.push({ url: String(url), redirect: init.redirect });
+    if (String(url).endsWith("/releases.atom")) return new Response("limited", { status: 403 });
+    return new Response("", {
+      status: 302,
+      headers: { location: "https://github.com/acme/app/releases/tag/v1.2.3" },
+    });
+  }, "acme/app");
+  assert.equal(redirectResult.source, "redirect");
+  assert.equal(redirectResult.tag, "v1.2.3");
+  assert.equal(redirectCalls.length, 2);
+
+  await assert.rejects(
+    () => fetchLatestReleaseFallback(async () => new Response("limited", { status: 403 }), "acme/app"),
+    /备用更新线路均失败：.*releases\.atom.*releases\/latest/,
+  );
 });
 
 test("downloadFile streams bytes and reports progress", async () => {

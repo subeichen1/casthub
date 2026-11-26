@@ -8,6 +8,8 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   downloadFile,
+  fetchLatestReleaseFallback,
+  normalizeRepoSlug,
   parseChecksums,
   pickUpdateAssets,
   sha256File,
@@ -300,7 +302,11 @@ function updateEndpoint(repo) {
 }
 
 function safeUpdateCacheName(value) {
-  return String(value || "latest").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 48) || "latest";
+  return (
+    String(value || "latest")
+      .replace(/[^a-zA-Z0-9._-]+/g, "_")
+      .slice(0, 48) || "latest"
+  );
 }
 
 /**
@@ -326,6 +332,31 @@ function createUpdateNetwork(appRoot) {
   }
 }
 
+/** 判断当前网络配置是否经过显式代理或环境代理；只有此时才需要额外尝试电脑默认线路。 */
+function hasConfiguredProxy(config) {
+  return Boolean(config && (config.proxy || config.useEnvProxy));
+}
+
+/** 创建完全绕过代理的直连客户端，用于所有代理/镜像线路失败后的电脑默认线路兜底。 */
+function createDirectUpdateNetwork(appRoot) {
+  const config = {
+    proxy: "",
+    githubMirror: "",
+    githubToken: "",
+    catalogUrl: "",
+    useEnvProxy: false,
+    noProxy: "",
+  };
+  try {
+    const { NetworkClient } = require("../dist/network-fetch.js");
+    const client = new NetworkClient(config);
+    return { fetch: client.fetch, config, close: () => client.close() };
+  } catch (error) {
+    logToFile(appRoot, "UPDATE_DIRECT_NETWORK_FALLBACK " + (error && error.message ? error.message : String(error)));
+    return { fetch: (...args) => globalThis.fetch(...args), config, close: async () => {} };
+  }
+}
+
 function sendUpdateProgress(progress) {
   const payload = {
     phase: progress && progress.phase ? progress.phase : "error",
@@ -347,7 +378,7 @@ function escapePowerShellSingleQuoted(value) {
 function quoteWindowsArgument(value) {
   const text = String(value);
   if (!/[\s"]/.test(text)) return text;
-  return '"' + text.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"';
+  return '"' + text.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, "$1$1") + '"';
 }
 
 function wildcardMatch(value, pattern) {
@@ -359,11 +390,7 @@ function wildcardMatch(value, pattern) {
 
 function runPowerShell(script, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", script],
-      { windowsHide: true },
-    );
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { windowsHide: true });
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 30000;
     const timeoutMessage = options.timeoutMessage || "PowerShell 执行超时";
     let stdout = "";
@@ -460,61 +487,184 @@ async function verifyAuthenticode(exePath, expectedSubject) {
   }
 }
 
+/** 请求 GitHub Releases API，并把限流状态转成更可诊断的错误。 */
+async function fetchReleaseFromApi(network, endpoint) {
+  if (!/^https:/i.test(endpoint)) throw new Error("更新仓库必须使用 HTTPS");
+  const headers = { Accept: "application/vnd.github+json", "User-Agent": "CastHub" };
+  try {
+    if (new URL(endpoint).hostname === "api.github.com" && network.config.githubToken) {
+      headers.Authorization = "Bearer " + network.config.githubToken;
+    }
+  } catch {
+    // URL 校验由 updateEndpoint/上游 fetch 处理
+  }
+  const response = await network.fetch(endpoint, {
+    headers,
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!response.ok) {
+    const remaining = response.headers.get("x-ratelimit-remaining") || "";
+    const reset = Number(response.headers.get("x-ratelimit-reset") || 0);
+    const limited = response.status === 403 && remaining === "0";
+    const error = new Error((limited ? "GitHub API 限流" : "GitHub API") + " HTTP " + response.status);
+    error.rateLimitReset = Number.isFinite(reset) && reset > 0 ? new Date(reset * 1000).toISOString() : "";
+    throw error;
+  }
+  return response.json();
+}
+
+/**
+ * 先走 API；失败后自动切到 releases.atom 和 releases/latest 重定向。
+ * 如果当前配置了代理，最后再用完全直连的电脑默认线路重试一次。
+ */
+async function fetchLatestReleaseWithFallback(network, repoSlug, appRoot) {
+  let apiError = null;
+  try {
+    const release = await fetchReleaseFromApi(network, updateEndpoint(repoSlug));
+    return { release, source: "api", via: "configured" };
+  } catch (error) {
+    apiError = error;
+  }
+
+  const apiMessage = apiError && apiError.message ? apiError.message : String(apiError);
+  logToFile(
+    appRoot,
+    "UPDATE_CHECK_FALLBACK reason=" +
+      apiMessage +
+      (apiError && apiError.rateLimitReset ? " reset=" + apiError.rateLimitReset : ""),
+  );
+  const errors = [];
+  try {
+    const fallback = await fetchLatestReleaseFallback(network.fetch, repoSlug);
+    logToFile(appRoot, "UPDATE_CHECK_FALLBACK_OK source=" + fallback.source + " tag=" + fallback.tag);
+    return { ...fallback, via: "configured" };
+  } catch (error) {
+    errors.push(error && error.message ? error.message : String(error));
+  }
+
+  if (hasConfiguredProxy(network.config)) {
+    const direct = createDirectUpdateNetwork(appRoot);
+    try {
+      const fallback = await fetchLatestReleaseFallback(direct.fetch, repoSlug);
+      logToFile(appRoot, "UPDATE_CHECK_DIRECT_FALLBACK_OK source=" + fallback.source + " tag=" + fallback.tag);
+      return { ...fallback, via: "direct" };
+    } catch (error) {
+      errors.push("电脑默认线路：" + (error && error.message ? error.message : String(error)));
+    } finally {
+      await direct.close().catch(() => {});
+    }
+  }
+
+  throw new Error(apiMessage + "；" + errors.join("；") + "。请检查网络，或开启系统代理 / TUN 代理（节点）后重试。");
+}
+
+async function downloadAndVerifyWithNetwork(info, network, appRoot, tempDir, label) {
+  const cacheDir = path.join(appRoot, "update-cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const exePath = path.join(cacheDir, "CastHub-" + safeUpdateCacheName(info.tag) + ".exe");
+  const checksumPath = path.join(tempDir, "checksums.txt");
+  logToFile(
+    appRoot,
+    "UPDATE_DOWNLOAD_START line=" + label + " url=" + info.exeUrl + " size=" + info.size + " cache=" + exePath,
+  );
+  sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 0, message: "正在下载校验文件…" });
+  await downloadFile(info.checksumUrl, checksumPath, {
+    fetcher: network.fetch,
+    allowText: true,
+  });
+  const checksums = parseChecksums(fs.readFileSync(checksumPath, "utf8"));
+  let expected = checksums["CastHub.exe"];
+  if (!expected) {
+    const key = Object.keys(checksums).find((name) => name.toLowerCase() === "casthub.exe");
+    if (key) expected = checksums[key];
+  }
+  if (!expected) throw new Error("checksums.txt 缺少 CastHub.exe 的 SHA-256");
+  sendUpdateProgress({ phase: "downloading", received: 0, total: info.size || 0, percent: 0, message: "正在下载 0%" });
+  await downloadFile(info.exeUrl, exePath, {
+    fetcher: network.fetch,
+    githubMirror: network.config.githubMirror || "",
+    expectedSha256: expected,
+    onProgress: (progress) => {
+      sendUpdateProgress({
+        phase: "downloading",
+        received: progress.received,
+        total: progress.total,
+        percent: progress.percent,
+        message: "正在下载 " + progress.percent + "%",
+      });
+    },
+  });
+  logToFile(appRoot, "UPDATE_DOWNLOAD_DONE line=" + label + " path=" + exePath);
+  sendUpdateProgress({ phase: "verifying", received: 0, total: 0, percent: 100, message: "正在校验…" });
+  const actual = await sha256File(exePath);
+  if (actual.toLowerCase() !== expected.toLowerCase()) {
+    throw new Error("CastHub.exe 的 SHA-256 校验失败");
+  }
+  const settings = readDesktopSettings(appRoot);
+  await verifyAuthenticode(exePath, settings.updateSignerSubject);
+  logToFile(
+    appRoot,
+    "UPDATE_VERIFY_OK line=" + label + " sha256=" + actual + " signer=" + settings.updateSignerSubject,
+  );
+  return { tempDir, exePath };
+}
+
 async function downloadAndVerifyUpdate() {
   const info = updateInfo;
   if (!info) throw new Error("没有可用更新");
   const appRoot = appRootPath || resolveAppRoot();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-update-"));
-  const cacheDir = path.join(appRoot, "update-cache");
-  fs.mkdirSync(cacheDir, { recursive: true });
-  const exePath = path.join(cacheDir, "CastHub-" + safeUpdateCacheName(info.tag) + ".exe");
-  const checksumPath = path.join(tempDir, "checksums.txt");
-  const network = createUpdateNetwork(appRoot);
+  const primaryNetwork = createUpdateNetwork(appRoot);
+  const attempts = [{ label: "configured", display: "配置线路", network: primaryNetwork }];
+  if (hasConfiguredProxy(primaryNetwork.config)) {
+    attempts.push({
+      label: "direct",
+      display: "电脑默认线路",
+      network: createDirectUpdateNetwork(appRoot),
+    });
+  }
+  let lastError = null;
   try {
-    logToFile(appRoot, "UPDATE_DOWNLOAD_START url=" + info.exeUrl + " size=" + info.size + " cache=" + exePath);
-    sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 0, message: "正在下载校验文件…" });
-    await downloadFile(info.checksumUrl, checksumPath, {
-      fetcher: network.fetch,
-      allowText: true,
-    });
-    const checksums = parseChecksums(fs.readFileSync(checksumPath, "utf8"));
-    let expected = checksums["CastHub.exe"];
-    if (!expected) {
-      const key = Object.keys(checksums).find((name) => name.toLowerCase() === "casthub.exe");
-      if (key) expected = checksums[key];
+    for (const attempt of attempts) {
+      try {
+        if (attempt.label === "direct") {
+          sendUpdateProgress({
+            phase: "downloading",
+            received: 0,
+            total: info.size || 0,
+            percent: 0,
+            message: "配置线路不可用，正在尝试电脑默认线路…",
+          });
+        }
+        return await downloadAndVerifyWithNetwork(info, attempt.network, appRoot, tempDir, attempt.label);
+      } catch (error) {
+        lastError = error;
+        logToFile(
+          appRoot,
+          "UPDATE_DOWNLOAD_ATTEMPT_FAILED line=" +
+            attempt.label +
+            " " +
+            (error && error.message ? error.message : String(error)),
+        );
+      } finally {
+        if (attempt.label === "direct") await attempt.network.close().catch(() => {});
+      }
     }
-    if (!expected) throw new Error("checksums.txt 缺少 CastHub.exe 的 SHA-256");
-    sendUpdateProgress({ phase: "downloading", received: 0, total: info.size || 0, percent: 0, message: "正在下载 0%" });
-    await downloadFile(info.exeUrl, exePath, {
-      fetcher: network.fetch,
-      githubMirror: network.config.githubMirror || "",
-      expectedSha256: expected,
-      onProgress: (progress) => {
-        sendUpdateProgress({
-          phase: "downloading",
-          received: progress.received,
-          total: progress.total,
-          percent: progress.percent,
-          message: "正在下载 " + progress.percent + "%",
-        });
-      },
-    });
-    logToFile(appRoot, "UPDATE_DOWNLOAD_DONE path=" + exePath);
-    sendUpdateProgress({ phase: "verifying", received: 0, total: 0, percent: 100, message: "正在校验…" });
-    const actual = await sha256File(exePath);
-    if (actual.toLowerCase() !== expected.toLowerCase()) {
-      throw new Error("CastHub.exe 的 SHA-256 校验失败");
-    }
-    const settings = readDesktopSettings(appRoot);
-    await verifyAuthenticode(exePath, settings.updateSignerSubject);
-    logToFile(appRoot, "UPDATE_VERIFY_OK sha256=" + actual + " signer=" + settings.updateSignerSubject);
-    return { tempDir, exePath };
+    const tried = attempts.map((attempt) => attempt.display).join("、");
+    const detail = lastError && lastError.message ? lastError.message : String(lastError);
+    throw new Error(
+      "所有下载线路均失败（已尝试 " +
+        tried +
+        "，含 GitHub 镜像与 GitHub 原始地址）。" +
+        "请检查网络，或开启系统代理 / TUN 代理（节点）后重试。最后错误：" +
+        detail,
+    );
   } catch (error) {
     logToFile(appRoot, "UPDATE_VERIFY_FAILED " + (error && error.message ? error.message : String(error)));
     fs.rmSync(tempDir, { recursive: true, force: true });
     throw error;
   } finally {
-    await network.close().catch(() => {});
+    await primaryNetwork.close().catch(() => {});
   }
 }
 
@@ -545,7 +695,13 @@ async function installUpdate() {
   logToFile(appRoot, "UPDATE_TARGET path=" + target);
   try {
     const downloaded = await downloadAndVerifyUpdate();
-    sendUpdateProgress({ phase: "installing", received: 0, total: 0, percent: 100, message: "正在安装，应用即将重启…" });
+    sendUpdateProgress({
+      phase: "installing",
+      received: 0,
+      total: 0,
+      percent: 100,
+      message: "正在安装，应用即将重启…",
+    });
     const helperPath = writeUpdateHelperScript(downloaded.tempDir);
     const helperPid = await launchUpdateHelper(helperPath, target, downloaded.exePath, UPDATE_LOG_PATH);
     logToFile(appRoot, "UPDATE_INSTALL_SPAWNED helper=" + helperPath + " target=" + target + " pid=" + helperPid);
@@ -570,25 +726,22 @@ async function checkForUpdates(options) {
     logToFile(appRootPath, "UPDATE_CHECK_SKIPPED 未配置 desktop.updateRepo");
     return { status: "skipped", reason: "no-repo" };
   }
+  const repoSlug = normalizeRepoSlug(settings.updateRepo);
   const endpoint = updateEndpoint(settings.updateRepo);
   logToFile(appRootPath, "UPDATE_CHECK_START manual=" + manual + " endpoint=" + endpoint);
   const network = createUpdateNetwork(appRootPath);
   try {
-    if (!/^https:/i.test(endpoint)) throw new Error("更新仓库必须使用 HTTPS");
-    const headers = { Accept: "application/vnd.github+json", "User-Agent": "CastHub" };
-    try {
-      if (new URL(endpoint).hostname === "api.github.com" && network.config.githubToken) {
-        headers.Authorization = "Bearer " + network.config.githubToken;
-      }
-    } catch {
-      // URL 校验由 updateEndpoint/上游 fetch 处理
+    let data;
+    let source = "api";
+    let via = "configured";
+    if (repoSlug) {
+      const result = await fetchLatestReleaseWithFallback(network, repoSlug, appRootPath);
+      data = result.release;
+      source = result.source;
+      via = result.via;
+    } else {
+      data = await fetchReleaseFromApi(network, endpoint);
     }
-    const response = await network.fetch(endpoint, {
-      headers,
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!response.ok) throw new Error("HTTP " + response.status);
-    const data = await response.json();
     const latestTag = typeof data.tag_name === "string" ? data.tag_name : "";
     const current = app.getVersion();
     if (compareVersions(latestTag, current) > 0) {
@@ -602,7 +755,18 @@ async function checkForUpdates(options) {
       };
       logToFile(
         appRootPath,
-        "UPDATE_FOUND current=" + current + " latest=" + latestTag + " exe=" + assets.exeUrl + " size=" + assets.exeSize,
+        "UPDATE_FOUND source=" +
+          source +
+          " via=" +
+          via +
+          " current=" +
+          current +
+          " latest=" +
+          latestTag +
+          " exe=" +
+          assets.exeUrl +
+          " size=" +
+          assets.exeSize,
       );
       showNotification("发现新版本", "CastHub " + latestTag + " 已发布，可在桌面设置或托盘菜单立即更新。", appRootPath);
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -613,7 +777,7 @@ async function checkForUpdates(options) {
         });
       }
       rebuildTrayMenu();
-      return { status: "found", current, latest: latestTag, version: updateInfo.version };
+      return { status: "found", current, latest: latestTag, version: updateInfo.version, source };
     }
     updateInfo = null;
     rebuildTrayMenu();
@@ -725,7 +889,10 @@ async function boot() {
       try {
         await serverHandle.close();
       } catch (closeError) {
-        logToFile(appRoot, "启动失败后关闭服务异常: " + (closeError && closeError.message ? closeError.message : String(closeError)));
+        logToFile(
+          appRoot,
+          "启动失败后关闭服务异常: " + (closeError && closeError.message ? closeError.message : String(closeError)),
+        );
       }
       serverHandle = null;
     }
@@ -744,9 +911,7 @@ function registerIpc() {
     return {
       ...settings,
       version: app.getVersion(),
-      updateAvailable: updateInfo
-        ? { version: updateInfo.version, tag: updateInfo.tag, size: updateInfo.size }
-        : null,
+      updateAvailable: updateInfo ? { version: updateInfo.version, tag: updateInfo.tag, size: updateInfo.size } : null,
     };
   });
   ipcMain.handle("desktop:set-auto-start", (_event, enabled) => applyAutoStart(enabled === true));
