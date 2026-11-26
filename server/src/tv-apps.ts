@@ -12,8 +12,14 @@ export interface TvAppVariant {
   packageName: string;
   /** 启动组件：<包名>/<Activity>。 */
   activity: string;
-  /** 最低 Android 版本（只用于面板提示）。 */
+  /** 最低 Android 版本（只用于面板提示与自动匹配）。 */
   minSdk: number;
+  /** 最高 Android 版本（含）；用于「只给老系统用」的变体（红果 Android 5 兼容版）。 */
+  maxSdk?: number;
+  /** 该变体只包含这些 ABI；留空表示不限架构。 */
+  abis?: readonly string[];
+  /** 自动匹配时的优先级：越大越优先；默认变体给 100，保证兼容时行为不变。 */
+  autoPriority?: number;
   /** 发布资产文件名模板，`{version}` 会替换成去掉 v 前缀的版本号。 */
   assetName: string;
 }
@@ -66,6 +72,7 @@ const AERIAL: TvAppDefinition = {
       packageName: "app.orchard.tv",
       activity: "app.orchard.tv/.MainActivity",
       minSdk: 21,
+      autoPriority: 100,
       assetName: "aerial-standard.apk"
     }
   ],
@@ -89,6 +96,7 @@ const HONGGUO: TvAppDefinition = {
       packageName: "rocks.aston.hongguotv",
       activity: "rocks.aston.hongguotv/.MainActivity",
       minSdk: 23,
+      autoPriority: 100,
       assetName: "hongguo-tv-{version}.apk"
     },
     {
@@ -98,6 +106,8 @@ const HONGGUO: TvAppDefinition = {
       packageName: "rocks.aston.hongguotv.mpv",
       activity: "rocks.aston.hongguotv.mpv/.MainActivity",
       minSdk: 23,
+      // 包体大得多、解码路径不同，只在用户手选时用，自动匹配不选它。
+      autoPriority: 80,
       assetName: "hongguo-tv-mpv-{version}.apk"
     },
     {
@@ -107,6 +117,9 @@ const HONGGUO: TvAppDefinition = {
       packageName: "rocks.aston.hongguotv.android5test",
       activity: "rocks.aston.hongguotv.android5test/.MainActivity",
       minSdk: 21,
+      // 只给 Android 5.0/5.1（API 21-22）：标准版 minSdk 23，两者互斥。
+      maxSdk: 22,
+      autoPriority: 100,
       assetName: "hongguo-tv-android5-{version}.apk"
     }
   ],
@@ -134,6 +147,8 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 19,
+      // 双架构兜底：设备架构读不出来或专版不适用时选它。
+      autoPriority: 100,
       assetName: "TVBox_q215613905_{version}-java.apk"
     },
     {
@@ -143,6 +158,9 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 19,
+      abis: ["armeabi-v7a", "armeabi"],
+      // 32 位专版：设备只有 32 位 ABI 时优先，包体更小、不会因缺 arm64 库闪退。
+      autoPriority: 105,
       assetName: "TVBox_q215613905_{version}-java32.apk"
     },
     {
@@ -152,6 +170,9 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 21,
+      abis: ["arm64-v8a", "x86_64"],
+      // 64 位专版：设备带 64 位 ABI 时优先。
+      autoPriority: 105,
       assetName: "TVBox_q215613905_{version}-java64.apk"
     },
     {
@@ -161,6 +182,7 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 19,
+      autoPriority: 90,
       assetName: "TVBox_q215613905_{version}-python.apk"
     },
     {
@@ -170,6 +192,8 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 19,
+      abis: ["armeabi-v7a", "armeabi"],
+      autoPriority: 95,
       assetName: "TVBox_q215613905_{version}-python32.apk"
     },
     {
@@ -179,6 +203,8 @@ const TVBOX: TvAppDefinition = {
       packageName: "com.github.tvbox.osc.jun",
       activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
       minSdk: 21,
+      abis: ["arm64-v8a", "x86_64"],
+      autoPriority: 95,
       assetName: "TVBox_q215613905_{version}-python64.apk"
     }
   ],
@@ -309,12 +335,156 @@ export function variantSummary(variant: TvAppVariant): {
   description: string;
   packageName: string;
   minSdk: number;
+  maxSdk: number | null;
+  abis: string[];
+  autoPriority: number;
 } {
   return {
     id: variant.id,
     name: variant.name,
     description: variant.description,
     packageName: variant.packageName,
-    minSdk: variant.minSdk
+    minSdk: variant.minSdk,
+    maxSdk: typeof variant.maxSdk === "number" ? variant.maxSdk : null,
+    abis: variant.abis ? [...variant.abis] : [],
+    autoPriority: variant.autoPriority ?? 100
   };
 }
+/** 电视系统属性（adb shell getprop 的子集），用于自动匹配发行变体。 */
+export interface TvDeviceProfile {
+  manufacturer: string | null;
+  model: string | null;
+  device: string | null;
+  /** Android API 级别（ro.build.version.sdk）；读不到为 null。 */
+  sdkInt: number | null;
+  /** 设备支持的 ABI，按 ro.product.cpu.abilist 顺序；读不到为空数组。 */
+  abis: string[];
+}
+
+/** getprop 键 → 字段；顺序即优先级（abilist 优先于 abi）。 */
+const ABI_KEYS = ["ro.product.cpu.abilist", "ro.product.cpu.abi", "ro.product.cpu.abilist64", "ro.product.cpu.abi2"];
+
+function firstProp(props: Record<string, string>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = (props[key] ?? "").trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+/** 解析 `adb shell getprop` 的 `[key]: [value]` 输出；也接受已解析的键值对。 */
+export function parseDeviceProfile(input: string | Record<string, string>): TvDeviceProfile {
+  const props: Record<string, string> = {};
+  if (typeof input === "string") {
+    for (const line of input.split(/\r?\n/)) {
+      const match = line.match(/^\[([^\]]+)\]:\s*\[(.*)\]$/);
+      if (match) props[match[1]] = match[2];
+    }
+  } else {
+    for (const [key, value] of Object.entries(input)) {
+      if (typeof value === "string") props[key] = value;
+    }
+  }
+  const sdkRaw = firstProp(props, ["ro.build.version.sdk"]);
+  const sdkInt = sdkRaw && /^\d+$/.test(sdkRaw) ? Number.parseInt(sdkRaw, 10) : null;
+  const abis: string[] = [];
+  for (const key of ABI_KEYS) {
+    const value = (props[key] ?? "").trim();
+    if (!value) continue;
+    for (const abi of value.split(",")) {
+      const name = abi.trim();
+      if (name && !abis.includes(name)) abis.push(name);
+    }
+  }
+  return {
+    manufacturer: firstProp(props, ["ro.product.manufacturer"]),
+    model: firstProp(props, ["ro.product.model"]),
+    device: firstProp(props, ["ro.product.device"]),
+    sdkInt,
+    abis
+  };
+}
+
+/** 自动匹配结果；reason 是给用户看的一句话依据。 */
+export interface TvVariantMatch {
+  variant: TvAppVariant;
+  /** manual（用户指定）/ auto（按系统属性选中）/ fallback（信息不足，用默认变体）。 */
+  source: "manual" | "auto" | "fallback";
+  reason: string;
+}
+
+function sdkCompatible(variant: TvAppVariant, sdkInt: number | null): boolean {
+  if (sdkInt === null) return true;
+  if (sdkInt < variant.minSdk) return false;
+  if (typeof variant.maxSdk === "number" && sdkInt > variant.maxSdk) return false;
+  return true;
+}
+
+function abiCompatible(variant: TvAppVariant, abis: readonly string[]): boolean {
+  if (!variant.abis || variant.abis.length === 0) return true;
+  if (abis.length === 0) return true;
+  return variant.abis.some((abi) => abis.includes(abi));
+}
+
+function describeProfile(profile: TvDeviceProfile): string {
+  const parts: string[] = [];
+  if (profile.sdkInt !== null) parts.push("Android API " + profile.sdkInt);
+  if (profile.abis.length > 0) parts.push(profile.abis[0]);
+  if (profile.model) parts.push(profile.model);
+  return parts.join(" · ");
+}
+
+/**
+ * 按电视系统属性挑发行变体：先按 minSdk/maxSdk 与 ABI 过滤，再按 autoPriority 从高到低、
+ * 默认变体优先、目录顺序兜底。用户显式指定变体时直接尊重（source=manual）。
+ * 读不到属性时返回默认变体并标 fallback，绝不因为探测失败而挡住安装。
+ */
+export function matchVariantForDevice(
+  app: TvAppDefinition,
+  profile: TvDeviceProfile | null,
+  requestedVariantId?: string | null
+): TvVariantMatch {
+  const requested = (requestedVariantId ?? "").trim();
+  if (requested && requested !== "auto") {
+    const manual = findTvVariant(app, requested);
+    if (manual) return { variant: manual, source: "manual", reason: "手动选择" };
+  }
+  const fallbackVariant = findTvVariant(app, app.defaultVariant) ?? app.variants[0];
+  if (!profile || (profile.sdkInt === null && profile.abis.length === 0)) {
+    return { variant: fallbackVariant, source: "fallback", reason: "读不到电视系统属性，使用默认变体" };
+  }
+  const candidates = app.variants.filter(
+    (variant) => sdkCompatible(variant, profile.sdkInt) && abiCompatible(variant, profile.abis)
+  );
+  if (candidates.length === 0) {
+    return {
+      variant: fallbackVariant,
+      source: "fallback",
+      reason: "没有完全匹配的变体（" + describeProfile(profile) + "），使用默认变体"
+    };
+  }
+  // 设备主 ABI（abilist 第一项）匹配得越靠前越优先：同时带 arm64 与 armv7 的电视应装 64 位专版。
+  const primaryAbi = profile.abis[0] ?? "";
+  const abiRank = (variant: TvAppVariant): number => {
+    if (!variant.abis || variant.abis.length === 0) return 99;
+    const index = variant.abis.indexOf(primaryAbi);
+    return index < 0 ? 98 : index;
+  };
+  const ranked = [...candidates].sort((a, b) => {
+    const priority = (b.autoPriority ?? 100) - (a.autoPriority ?? 100);
+    if (priority !== 0) return priority;
+    const abi = abiRank(a) - abiRank(b);
+    if (abi !== 0) return abi;
+    const aDefault = a.id === app.defaultVariant ? 1 : 0;
+    const bDefault = b.id === app.defaultVariant ? 1 : 0;
+    if (aDefault !== bDefault) return bDefault - aDefault;
+    return app.variants.indexOf(a) - app.variants.indexOf(b);
+  });
+  const chosen = ranked[0];
+  return {
+    variant: chosen,
+    source: chosen.id === app.defaultVariant ? "fallback" : "auto",
+    reason: describeProfile(profile) + " → " + chosen.name
+  };
+}
+

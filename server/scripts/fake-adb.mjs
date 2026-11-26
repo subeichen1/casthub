@@ -2,10 +2,19 @@
 // 测试用 fake adb：按 FAKE_ADB_MODE_FILE 的内容模拟不同设备返回，并把每次调用记录到 FAKE_ADB_LOG。
 // 状态文件 FAKE_ADB_STATE 支持多包共存：packages = { "<包名>": { version, versionCode } }，
 // 兼容旧的单包字段 installed / version / versionCode（等价于 app.orchard.tv）。
+// props 可覆盖设备系统属性（getprop），不写则用 DEFAULT_PROPS（Android 11 / arm64 电视）。
 import fs from "node:fs";
 
 const DEFAULT_ACCESSIBILITY = "com.example/.Svc:app.orchard.tv/.guard.HomeGuardService";
 const AERIAL_PACKAGE = "app.orchard.tv";
+const DEFAULT_PROPS = {
+  "ro.product.manufacturer": "Fake",
+  "ro.product.model": "Fake TV",
+  "ro.product.device": "fake_tv",
+  "ro.build.version.sdk": "30",
+  "ro.product.cpu.abilist": "arm64-v8a,armeabi-v7a,armeabi",
+  "ro.product.cpu.abi": "arm64-v8a"
+};
 
 // 安装包文件名 → 包名。e2e 用本地假 APK，文件名来自 TV_APPS 的缓存前缀。
 const PACKAGE_BY_FILE = [
@@ -36,11 +45,20 @@ function readMode() {
 }
 
 function normalizeState(parsed) {
+  // 显式给了 props 就完全用它（空对象 = 这台设备读不到系统属性），
+  // 只有完全没写 props 时才退回默认值，避免"想模拟读不到属性"却被默认值盖住。
+  const explicitProps = parsed.props && typeof parsed.props === "object" ? parsed.props : null;
   const state = {
     packages: {},
+    props: explicitProps ? {} : { ...DEFAULT_PROPS },
     accessibility: typeof parsed.accessibility === "string" ? parsed.accessibility : DEFAULT_ACCESSIBILITY,
     focus: typeof parsed.focus === "string" ? parsed.focus : null
   };
+  if (explicitProps) {
+    for (const [key, value] of Object.entries(explicitProps)) {
+      if (typeof value === "string") state.props[key] = value;
+    }
+  }
   if (parsed.packages && typeof parsed.packages === "object") {
     for (const [name, value] of Object.entries(parsed.packages)) {
       if (!value) continue;
@@ -84,6 +102,7 @@ function writeState(state) {
   // 同时写多包视图与旧的单包字段，老断言（installed / version / versionCode）继续成立。
   const payload = {
     packages: state.packages,
+    props: state.props,
     accessibility: state.accessibility,
     focus: state.focus,
     installed: !!aerial,
@@ -226,6 +245,17 @@ async function main() {
       }
       if (sub === "compile") out("Success");
       out("");
+    }
+    if (shellArgs[0] === "getprop") {
+      const key = shellArgs[1];
+      if (key) {
+        out(state.props[key] ?? "");
+      }
+      out(
+        Object.entries(state.props)
+          .map(([name, value]) => "[" + name + "]: [" + value + "]")
+          .join("\n")
+      );
     }
     if (head === "settings get") out(state.accessibility);
     if (head === "settings put") {

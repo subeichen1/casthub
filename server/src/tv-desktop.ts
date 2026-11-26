@@ -11,10 +11,14 @@ import {
   type TvAppDefinition,
   type TvAppReleaseInfo,
   type TvAppVariant,
+  type TvDeviceProfile,
+  type TvVariantMatch,
   findTvApp,
   findTvVariant,
+  matchVariantForDevice,
   parseAppCustomRelease,
   parseAppRelease,
+  parseDeviceProfile,
   releaseJsonEnvName,
   releasesApiUrl,
   variantSummary
@@ -98,6 +102,12 @@ export interface TvDesktopInfo {
   variantId: string;
   variantName: string;
   installKind: "launcher" | "app";
+  /** 目标电视的系统属性；没选设备、adb 不可用或读取失败时为 null。 */
+  deviceProfile: TvDeviceProfile | null;
+  /** 变体是怎么定下来的：manual（用户指定）/ auto（按系统属性匹配）/ fallback（用默认变体）。 */
+  variantSource: "manual" | "auto" | "fallback";
+  /** 一句话说明为什么选这个变体（面板直接显示）。 */
+  variantReason: string;
   installed?: TvDesktopInstalledInfo;
 }
 
@@ -129,6 +139,10 @@ export interface TvDesktopResult {
   appId: string;
   variantId: string;
   packageName: string;
+  /** 实际使用的变体是怎么选出来的，便于用户理解自动匹配结果。 */
+  variantSource: "manual" | "auto" | "fallback";
+  variantReason: string;
+  deviceProfile: TvDeviceProfile | null;
 }
 
 interface ToolResult {
@@ -887,6 +901,38 @@ async function queryInstalledVersion(
   return { installed: true, version };
 }
 
+/** 读电视系统属性（一次 getprop 批量返回）；失败返回 null，绝不因此中断安装。 */
+async function probeDeviceProfile(adbPath: string, serial: string): Promise<TvDeviceProfile | null> {
+  try {
+    const result = await runTool(adbPath, ["-s", serial, "shell", "getprop"], ADB_STEP_TIMEOUT_MS);
+    const text = result.stdout + result.stderr;
+    if (!/\[/.test(text)) return null;
+    return parseDeviceProfile(text);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 自动匹配用的一步到位版本：连 adb（只连不断开）→ 读系统属性 → 挑变体。
+ * 用户显式指定变体时不探测，直接返回该变体（省一次 adb 往返）。
+ */
+async function resolveVariantForTarget(
+  adbPath: string,
+  serial: string,
+  app: TvAppDefinition,
+  requestedVariantId: string | null | undefined
+): Promise<{ match: TvVariantMatch; profile: TvDeviceProfile | null }> {
+  const wanted = (requestedVariantId ?? "").trim();
+  if (wanted && wanted !== "auto") {
+    return { match: matchVariantForDevice(app, null, wanted), profile: null };
+  }
+  // 连不上也继续读一次：部分设备已在线时 connect 会报 already connected 或直接失败，但 getprop 仍可用。
+  await runTool(adbPath, ["connect", serial], ADB_CONNECT_TIMEOUT_MS);
+  const profile = await probeDeviceProfile(adbPath, serial);
+  return { match: matchVariantForDevice(app, profile, null), profile };
+}
+
 function targetOf(devices: readonly TvDesktopDeviceInput[], deviceId: string): TvDesktopTarget {
   const target = listTargets(devices).find((item) => item.deviceId === deviceId);
   if (!target) throw new Error("设备不存在");
@@ -930,11 +976,29 @@ export class TvDesktopService {
     devices: readonly TvDesktopDeviceInput[],
     options?: { force?: boolean; deviceId?: string; appId?: string; variantId?: string }
   ): Promise<TvDesktopInfo> {
-    const { app, variant } = resolveTvAppSelection(options?.appId, options?.variantId);
-    const [adb, releaseResult] = await Promise.all([
-      detectAdb(),
-      fetchAppRelease(app, variant, { force: options?.force })
-    ]);
+    const app = findTvApp(options?.appId) ?? aerialApp();
+    const requested = (options?.variantId ?? "").trim();
+    const manual = requested && requested !== "auto" ? findTvVariant(app, requested) : null;
+    const adb = await detectAdb();
+    // 变体未指定（或选了「自动匹配」）且有目标电视时，先读系统属性再决定装哪个资产。
+    let profile: TvDeviceProfile | null = null;
+    let match: TvVariantMatch;
+    if (manual) {
+      match = { variant: manual, source: "manual", reason: "手动选择" };
+    } else if (options?.deviceId && adb.available && adb.path) {
+      try {
+        const target = targetOf(devices, options.deviceId);
+        const probed = await resolveVariantForTarget(adb.path, serialFor(target.ip as string), app, null);
+        profile = probed.profile;
+        match = probed.match;
+      } catch {
+        match = matchVariantForDevice(app, null, null);
+      }
+    } else {
+      match = matchVariantForDevice(app, null, null);
+    }
+    const variant = match.variant;
+    const releaseResult = await fetchAppRelease(app, variant, { force: options?.force });
     const info: TvDesktopInfo = {
       adb,
       release: releaseResult.release,
@@ -960,7 +1024,10 @@ export class TvDesktopService {
       appName: app.name,
       variantId: variant.id,
       variantName: variant.name,
-      installKind: app.installKind
+      installKind: app.installKind,
+      deviceProfile: profile,
+      variantSource: match.source,
+      variantReason: match.reason
     };
     if (options?.deviceId) {
       info.installed = await this.installedInfo(devices, options.deviceId, adb, releaseResult.release, app, variant);
@@ -1032,7 +1099,12 @@ export class TvDesktopService {
       variantId?: string;
     }
   ): Promise<TvDesktopResult> {
-    const { app, variant } = resolveTvAppSelection(options?.appId, options?.variantId);
+    const app = findTvApp(options?.appId) ?? aerialApp();
+    const requested = (options?.variantId ?? "").trim();
+    let variant = (requested && requested !== "auto" ? findTvVariant(app, requested) : null) ?? defaultVariantOf(app);
+    let variantSource: "manual" | "auto" | "fallback" = requested && requested !== "auto" ? "manual" : "fallback";
+    let variantReason = variantSource === "manual" ? "手动选择" : "使用默认变体";
+    let profile: TvDeviceProfile | null = null;
     this.begin(app.installKind === "launcher" ? "安装" : "安装" + app.name);
     const steps: TvDesktopStep[] = [];
     const fail = (message: string, release: TvAppReleaseInfo | null): TvDesktopResult => ({
@@ -1044,7 +1116,10 @@ export class TvDesktopService {
       release,
       appId: app.id,
       variantId: variant.id,
-      packageName: variant.packageName
+      packageName: variant.packageName,
+      variantSource,
+      variantReason,
+      deviceProfile: profile
     });
     try {
       // 自定义地址先校验再碰 adb：地址非法时不该在电视上留下任何动作。
@@ -1061,6 +1136,16 @@ export class TvDesktopService {
       const adb = await detectAdb();
       if (!adb.available || !adb.path) {
         return fail(adb.hint, null);
+      }
+      const serial = serialFor(target.ip as string);
+
+      // 用户没指定变体时，先读电视系统属性（Android 版本 / ABI）再决定装哪个资产。
+      if (variantSource !== "manual") {
+        const probed = await resolveVariantForTarget(adb.path, serial, app, null);
+        variant = probed.match.variant;
+        variantSource = probed.match.source;
+        variantReason = probed.match.reason;
+        profile = probed.profile;
       }
 
       let release: TvAppReleaseInfo | null;
@@ -1106,7 +1191,6 @@ export class TvDesktopService {
       }
 
       const ctx: ExecContext = { adbPath: adb.path, steps };
-      const serial = serialFor(target.ip as string);
       const outcome =
         app.installKind === "launcher"
           ? await launcherInstallSteps(ctx, serial, apkPath)
@@ -1136,7 +1220,10 @@ export class TvDesktopService {
         release,
         appId: app.id,
         variantId: variant.id,
-        packageName: variant.packageName
+        packageName: variant.packageName,
+        variantSource,
+        variantReason,
+        deviceProfile: profile
       };
     } catch (error) {
       return fail(errorMessage(error), null);
@@ -1162,7 +1249,10 @@ export class TvDesktopService {
       release: null,
       appId: app.id,
       variantId: variant.id,
-      packageName: variant.packageName
+      packageName: variant.packageName,
+      variantSource: "manual",
+      variantReason: "卸载按所选变体的包名执行",
+      deviceProfile: null
     });
     try {
       const target = targetOf(devices, deviceId);
@@ -1200,7 +1290,10 @@ export class TvDesktopService {
         release: null,
         appId: app.id,
         variantId: variant.id,
-        packageName: variant.packageName
+        packageName: variant.packageName,
+        variantSource: "manual",
+        variantReason: "卸载按所选变体的包名执行",
+        deviceProfile: null
       };
     } catch (error) {
       return fail(errorMessage(error));

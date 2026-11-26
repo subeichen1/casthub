@@ -18,6 +18,7 @@ const FAKE_ADB = path.join(SERVER_DIR, "scripts", "fake-adb.mjs");
 const AERIAL_PACKAGE = "app.orchard.tv";
 const HONGGUO_PACKAGE = "rocks.aston.hongguotv";
 const HONGGUO_MPV_PACKAGE = "rocks.aston.hongguotv.mpv";
+const HONGGUO_ANDROID5_PACKAGE = "rocks.aston.hongguotv.android5test";
 const TVBOX_PACKAGE = "com.github.tvbox.osc.jun";
 
 const children = [];
@@ -292,14 +293,14 @@ async function main() {
   console.log("测试临时目录:", tempDir);
   console.log("测试 DATA_DIR:", dataDir);
 
-  console.log("\n[1/10] 启动 fake-tv ...");
+  console.log("\n[1/11] 启动 fake-tv ...");
   const fakeTv = startProcess("fake-tv", ["scripts/fake-tv.mjs"], {
     cwd: SERVER_DIR,
     env: { ...process.env, FAKE_TV_PORT: String(TV_PORT), FAKE_TV_TOKEN: TV_TOKEN, FAKE_TV_NAME: "Fake TV" }
   });
   await fakeTv.waitFor(/LISTENING/, 10000, "fake-tv 监听");
 
-  console.log("[2/10] 启动中枢（fake adb + 本地 APK）...");
+  console.log("[2/11] 启动中枢（fake adb + 本地 APK）...");
   const serverEnv = {
     ...process.env,
     PORT: String(HTTP_PORT),
@@ -320,7 +321,7 @@ async function main() {
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
-  console.log("[3/10] 连接控制台并读取电视助手信息 ...");
+  console.log("[3/11] 连接控制台并读取电视助手信息 ...");
   const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await consoleClient.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   consoleClient.send({ type: "addDevice", address: `ws://127.0.0.1:${TV_PORT}`, token: TV_TOKEN });
@@ -343,7 +344,7 @@ async function main() {
   assert(info.busy === false, "电视助手初始不忙");
   assert(info.packageName === AERIAL_PACKAGE, "面板显示目标包名 " + info.packageName);
 
-  console.log("[4/10] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
+  console.log("[4/11] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
   consoleClient.send({ type: "getDesktopInfo", deviceId: device.id });
   const installedInfo = await consoleClient.waitFor(
     (m) => m.type === "desktopInfo" && m.installed && m.installed.deviceId === device.id,
@@ -411,7 +412,7 @@ async function main() {
     "desktopInfo(恢复)"
   );
 
-  console.log("[5/10] 一键安装（成功路径）...");
+  console.log("[5/11] 一键安装（成功路径）...");
   const progressSeen = [];
   const collectProgress = setInterval(() => {
     for (const msg of consoleClient.messages) {
@@ -455,7 +456,7 @@ async function main() {
     "fake adb 处理了 version 探测"
   );
 
-  console.log("[6/10] 未授权路径（unauthorized）...");
+  console.log("[6/11] 未授权路径（unauthorized）...");
   fs.writeFileSync(modeFile, "unauthorized");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const unauthorizedResult = await consoleClient.waitFor(
@@ -467,7 +468,7 @@ async function main() {
   assert(stepByKey(unauthorizedResult, "state").ok === false, "get-state 步骤被判定失败");
   assert(!stepByKey(unauthorizedResult, "install"), "未授权时不继续执行 install");
 
-  console.log("[7/10] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
+  console.log("[7/11] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
   fs.writeFileSync(modeFile, "user-restricted");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const restrictedResult = await consoleClient.waitFor(
@@ -489,7 +490,7 @@ async function main() {
   assert(customUrlResult.message.includes("https://"), "自定义地址仅允许 https: " + customUrlResult.message);
   assert(readAdbCalls(adbLog).length === callsBefore, "自定义地址被拒时没有执行 adb");
 
-  console.log("[8/10] 还原（最小步骤）与忙时拒绝 ...");
+  console.log("[8/11] 还原（最小步骤）与忙时拒绝 ...");
   fs.writeFileSync(modeFile, "slow");
   const slowMark = consoleClient.mark();
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
@@ -529,7 +530,7 @@ async function main() {
   assert(stateAfter.accessibility === "com.example/.Svc", "无障碍列表已剔除 Aerial 守护项: " + stateAfter.accessibility);
 
 
-  console.log("[9/10] 红果短剧：应用目录、变体、安装/更新提示/共存/卸载 ...");
+  console.log("[9/11] 红果短剧：应用目录、变体、安装/更新提示/共存/卸载 ...");
   const appsMark = consoleClient.mark();
   consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", force: true });
   const hongguoInfo = await consoleClient.waitForAfter(
@@ -668,7 +669,7 @@ async function main() {
   assert(!finalState.packages[HONGGUO_PACKAGE], "fake 设备上红果标准版已卸载");
   assert(!!finalState.packages[HONGGUO_MPV_PACKAGE], "卸载标准版不影响 MPV 版: " + Object.keys(finalState.packages).join(","));
 
-  console.log("[10/10] TVBox：共享包名应用目录、六变体、先卸旧包再安装、卸载 ...");
+  console.log("[10/11] TVBox：共享包名应用目录、六变体、先卸旧包再安装、卸载 ...");
   const tvboxMark = consoleClient.mark();
   consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", force: true });
   const tvboxInfo = await consoleClient.waitForAfter(
@@ -755,6 +756,132 @@ async function main() {
   assert(!stepByKey(tvboxUninstall, "remove-role"), "TVBox 卸载不解除默认桌面角色");
   const tvboxFinalState = JSON.parse(fs.readFileSync(adbState, "utf8"));
   assert(!tvboxFinalState.packages[TVBOX_PACKAGE], "fake 设备上 TVBox 已卸载");
+
+  console.log("[11/11] 自动匹配：先读电视系统属性，再决定装哪个资产 ...");
+  // 老电视：Android 5.1（API 22）+ 只有 32 位 ABI → 红果必须选 android5 变体。
+  const oldTvProps = {
+    "ro.product.manufacturer": "OldBrand",
+    "ro.product.model": "Old TV 1080P",
+    "ro.build.version.sdk": "22",
+    "ro.product.cpu.abilist": "armeabi-v7a,armeabi",
+    "ro.product.cpu.abi": "armeabi-v7a"
+  };
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({ packages: {}, accessibility: "com.example/.Svc", props: oldTvProps })
+  );
+  writeHongguoRelease(hongguoReleaseJson, hongguoApks.android5, hongguoSha, {
+    variant: "android5",
+    apkName: "hongguo-tv-android5-0.2.182.apk"
+  });
+  const autoMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", deviceId: device.id, force: true });
+  const autoInfo = await consoleClient.waitForAfter(
+    autoMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "hongguo" && !!m.deviceProfile,
+    30000,
+    "desktopInfo(自动匹配)"
+  );
+  assert(autoInfo.variantId === "android5", "API 22 的老电视自动选中 Android 5 兼容版: " + autoInfo.variantId);
+  assert(autoInfo.variantSource === "auto", "匹配来源标记为 auto: " + autoInfo.variantSource);
+  assert(autoInfo.variantReason.includes("API 22"), "匹配依据说明读到的系统属性: " + autoInfo.variantReason);
+  assert(autoInfo.deviceProfile.sdkInt === 22, "面板回传读到的 API 等级: " + autoInfo.deviceProfile.sdkInt);
+  assert(autoInfo.deviceProfile.model === "Old TV 1080P", "面板回传读到的机型: " + autoInfo.deviceProfile.model);
+  assert(
+    Array.isArray(autoInfo.deviceProfile.abis) && autoInfo.deviceProfile.abis[0] === "armeabi-v7a",
+    "面板回传读到的 ABI: " + JSON.stringify(autoInfo.deviceProfile.abis)
+  );
+  assert(autoInfo.release && autoInfo.release.apkName.endsWith("android5-0.2.182.apk"), "按匹配结果取 android5 资产: " + (autoInfo.release && autoInfo.release.apkName));
+
+  // 同一台电视切到 TVBox：32 位设备选 java32（而不是包体更大的 python 系列）。
+  const tvboxAutoMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", deviceId: device.id, force: true });
+  const tvboxAuto = await consoleClient.waitForAfter(
+    tvboxAutoMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "tvbox" && !!m.deviceProfile,
+    30000,
+    "desktopInfo(tvbox 自动匹配)"
+  );
+  assert(tvboxAuto.variantId === "java32", "只有 32 位 ABI 时 TVBox 选 Java 32 位版: " + tvboxAuto.variantId);
+
+  // 换成 64 位主 ABI 的电视：同一份目录要选 java64。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({
+      packages: {},
+      accessibility: "com.example/.Svc",
+      props: {
+        "ro.product.manufacturer": "NewBrand",
+        "ro.product.model": "New TV 4K",
+        "ro.build.version.sdk": "31",
+        "ro.product.cpu.abilist": "arm64-v8a,armeabi-v7a,armeabi",
+        "ro.product.cpu.abi": "arm64-v8a"
+      }
+    })
+  );
+  const arm64Mark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", deviceId: device.id, force: true });
+  const arm64Info = await consoleClient.waitForAfter(
+    arm64Mark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "tvbox" && m.deviceProfile && m.deviceProfile.sdkInt === 31,
+    30000,
+    "desktopInfo(tvbox arm64)"
+  );
+  assert(arm64Info.variantId === "java64", "主 ABI 是 arm64-v8a 时 TVBox 选 Java 64 位版: " + arm64Info.variantId);
+  assert(arm64Info.variantReason.includes("arm64-v8a"), "匹配依据带上 ABI: " + arm64Info.variantReason);
+
+  // 读不到系统属性（getprop 空输出）→ 回退默认变体，绝不挡住安装。
+  fs.writeFileSync(adbState, JSON.stringify({ packages: {}, accessibility: "com.example/.Svc", props: {} }));
+  const noPropMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", deviceId: device.id, force: true });
+  const noPropInfo = await consoleClient.waitForAfter(
+    noPropMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "tvbox" && m.deviceProfile === null,
+    30000,
+    "desktopInfo(无属性回退)"
+  );
+  assert(noPropInfo.variantId === "java", "读不到系统属性时回退默认变体: " + noPropInfo.variantId);
+  assert(noPropInfo.variantSource === "fallback", "回退时标记 fallback: " + noPropInfo.variantSource);
+  assert(noPropInfo.variantReason.includes("默认变体"), "回退原因对用户可见: " + noPropInfo.variantReason);
+
+  // 手动指定变体时不探测、直接尊重用户选择。
+  const manualMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", deviceId: device.id, variantId: "python", force: true });
+  const manualInfo = await consoleClient.waitForAfter(
+    manualMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "tvbox" && m.variantId === "python",
+    30000,
+    "desktopInfo(手动变体)"
+  );
+  assert(manualInfo.variantSource === "manual", "手动选变体时标记 manual: " + manualInfo.variantSource);
+  assert(manualInfo.deviceProfile === null, "手动选变体时不做系统属性探测（省一次 adb 往返）");
+
+  // 安装链路真的按自动匹配结果下载对应资产：API 22 老电视 → android5 包。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({ packages: {}, accessibility: "com.example/.Svc", props: oldTvProps })
+  );
+  const autoInstallMark = consoleClient.mark();
+  consoleClient.send({ type: "installDesktop", deviceId: device.id, appId: "hongguo", variantId: "auto" });
+  const autoInstall = await consoleClient.waitForAfter(
+    autoInstallMark,
+    (m) => m.type === "desktopResult" && m.action === "install" && m.appId === "hongguo",
+    60000,
+    "desktopResult(自动匹配安装)"
+  );
+  assert(autoInstall.ok === true, "自动匹配安装成功: " + autoInstall.message);
+  assert(autoInstall.variantId === "android5", "安装时也按系统属性选变体: " + autoInstall.variantId);
+  assert(autoInstall.variantSource === "auto", "安装结果带匹配来源: " + autoInstall.variantSource);
+  assert(autoInstall.packageName === HONGGUO_ANDROID5_PACKAGE, "安装包名来自 android5 变体: " + autoInstall.packageName);
+  const autoDownload = stepByKey(autoInstall, "download");
+  assert(autoDownload.output.includes("hongguo-android5"), "下载的确实是 android5 资产: " + autoDownload.output);
+  const autoState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(!!autoState.packages[HONGGUO_ANDROID5_PACKAGE], "fake 设备上装的是 android5 包名");
+
+  // 探测动作确实落在 adb 上（不是凭空猜的）。
+  const autoCalls = readAdbCalls(adbLog);
+  const getpropCalls = autoCalls.filter((call) => Array.isArray(call.args) && call.args.includes("getprop"));
+  assert(getpropCalls.length > 0, "自动匹配通过 adb shell getprop 读取系统属性，共 " + getpropCalls.length + " 次");
 
   consoleClient.close();
   console.log("\n✅ E2E-TV-DESKTOP 全部通过");

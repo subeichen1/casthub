@@ -1097,10 +1097,17 @@
     // 应用/变体切换会并发发多个 getDesktopInfo，响应可能乱序返回。
     // 丢弃与当前选择不一致的旧响应，否则面板信息会和下拉框错位（例如选中 TVBox 却显示红果的版本）。
     if (state.tvDesktopAppId && msg.activeAppId && msg.activeAppId !== state.tvDesktopAppId) return;
-    if (state.tvDesktopVariantId && msg.variantId && msg.variantId !== state.tvDesktopVariantId) return;
+    // 选了「自动匹配」时中枢回的是匹配结果，不能拿它覆盖用户的选择，否则下拉会跳回具体变体。
+    if (
+      state.tvDesktopVariantId &&
+      state.tvDesktopVariantId !== "auto" &&
+      msg.variantId &&
+      msg.variantId !== state.tvDesktopVariantId
+    ) {
+      return;
+    }
     state.tvDesktop = msg;
     if (msg.activeAppId) state.tvDesktopAppId = msg.activeAppId;
-    if (msg.variantId) state.tvDesktopVariantId = msg.variantId;
     const installed = msg.installed;
     if (installed && installed.deviceId) {
       state.tvDesktopInstalled[installed.deviceId] = installed;
@@ -1156,18 +1163,31 @@
         return app.id === els.tvDesktopApp.value;
       }) || apps[0];
       const variants = Array.isArray(active.variants) ? active.variants : [];
-      const previousVariant = els.tvDesktopVariant.value || state.tvDesktopVariantId || info.variantId || active.defaultVariant;
+      const manualVariant = state.tvDesktopVariantId && state.tvDesktopVariantId !== "auto";
+      const previousVariant = els.tvDesktopVariant.value || (manualVariant ? state.tvDesktopVariantId : "auto");
       els.tvDesktopVariant.innerHTML = "";
+      if (variants.length > 1) {
+        const autoOption = document.createElement("option");
+        autoOption.value = "auto";
+        autoOption.textContent = "自动匹配（按电视系统属性）";
+        els.tvDesktopVariant.appendChild(autoOption);
+      }
       variants.forEach(function (variant) {
         const option = document.createElement("option");
         option.value = variant.id;
         option.textContent = variant.name + (variant.id === active.defaultVariant ? "（推荐）" : "");
         els.tvDesktopVariant.appendChild(option);
       });
-      const keepVariant = variants.some(function (variant) {
-        return variant.id === previousVariant;
-      });
-      els.tvDesktopVariant.value = keepVariant ? previousVariant : active.defaultVariant;
+      const keepVariant =
+        (previousVariant === "auto" && variants.length > 1) ||
+        variants.some(function (variant) {
+          return variant.id === previousVariant;
+        });
+      els.tvDesktopVariant.value = keepVariant
+        ? previousVariant
+        : variants.length > 1
+          ? "auto"
+          : active.defaultVariant;
       els.tvDesktopVariantRow.hidden = variants.length <= 1;
       els.tvDesktopIntro.textContent =
         active.description +
@@ -1233,6 +1253,18 @@
       addLine("adb", adb.hint || "未找到 adb，请安装 platform-tools 或把 adb 加入 PATH");
     } else {
       addLine("adb", adb.path || "");
+    }
+    const profile = info.deviceProfile;
+    if (profile) {
+      const parts = [];
+      if (profile.model) parts.push(profile.model);
+      if (profile.manufacturer) parts.push(profile.manufacturer);
+      if (profile.sdkInt !== null && profile.sdkInt !== undefined) parts.push("Android API " + profile.sdkInt);
+      if (Array.isArray(profile.abis) && profile.abis.length) parts.push(profile.abis.join("/"));
+      if (parts.length) addLine("电视系统", parts.join(" · "));
+    }
+    if (info.variantSource && info.variantSource !== "manual") {
+      addLine("匹配方式", info.variantReason || "按系统属性自动匹配");
     }
     if (info.release) {
       const release = info.release;
@@ -1386,7 +1418,9 @@
       }
       const payload = { type: "installDesktop", deviceId: target.deviceId };
       if (info.activeAppId) payload.appId = info.activeAppId;
-      if (info.variantId) payload.variantId = info.variantId;
+      // 自动匹配时把 "auto" 传给中枢，让它在真正安装前按当时的系统属性再确认一次变体。
+      if (state.tvDesktopVariantId === "auto") payload.variantId = "auto";
+      else if (info.variantId) payload.variantId = info.variantId;
       const customUrl = els.tvDesktopCustomUrl.value.trim();
       if (customUrl) payload.apkUrl = customUrl;
       const release = state.tvDesktop && state.tvDesktop.release;
@@ -1435,6 +1469,7 @@
       setTvDesktopProgress(0);
       const uninstallPayload = { type: "uninstallDesktop", deviceId: target.deviceId };
       if (info.activeAppId) uninstallPayload.appId = info.activeAppId;
+      // 卸载必须针对具体变体（包名），不能用 auto。
       if (info.variantId) uninstallPayload.variantId = info.variantId;
       if (!send(uninstallPayload)) {
         setTvDesktopBusy(false);

@@ -410,7 +410,7 @@ npm start
 | MPV 版 | `rocks.aston.hongguotv.mpv` | 标准版解码有问题的机型（MPV 解码，APK 更大） |
 | Android 5 兼容版 | `rocks.aston.hongguotv.android5test` | 仅 Android 5.0 / 5.1 老电视 |
 
-在面板的应用下拉里选中「红果短剧 TV」后会出现变体下拉，默认标准版；切换变体会重新查询该变体对应的安装包与已装版本。
+在面板的应用下拉里选中「红果短剧 TV」后会出现变体下拉，默认「自动匹配（按电视系统属性）」；切换变体会重新查询该变体对应的安装包与已装版本。
 
 ### TVBox 的六个变体（共用一个包名）
 
@@ -428,6 +428,24 @@ TVBoxOSC 的发布页对每个上游分支提供多个 APK，CastHub 取其中�
 **与红果的关键差别：六个变体共用同一个包名 `com.github.tvbox.osc.jun`，同一台电视只能装一个。** 想换变体请先点「卸载 TVBox」再装；直接点安装也会先执行一次可选的 `adb uninstall`（旧包不存在时该步骤失败也不影响后续安装）。
 
 版本号不是语义化版本，而是构建时间戳（如 `20261111-1518`），面板照样能比较新旧并提示更新。
+
+### 自动匹配电视系统属性
+
+变体下拉的默认项是「自动匹配（按电视系统属性）」。选中它以后，CastHub 会在查询安装包之前先连上电视、跑一次 `adb shell getprop` 读系统属性，再按下面的规则挑资产：
+
+| 判断依据 | 取自 | 作用 |
+| --- | --- | --- |
+| API 等级 | `ro.build.version.sdk` | 与变体的 `minSdk`/`maxSdk` 比对（红果 Android 5 兼容版上限 API 22，标准版下限 23） |
+| CPU 架构 | `ro.product.cpu.abilist`（退回 `abi`） | 与变体的 ABI 列表比对（TVBox 的 java32 只吃 armeabi-v7a，java64 只吃 arm64-v8a/x86_64） |
+| 机型/厂商 | `ro.product.model`、`ro.product.manufacturer` | 只用于在面板上显示「电视系统」一行，便于确认读到的确实是这台电视 |
+
+排序规则：先按变体的自动优先级（标准版优先，专版略高，MPV/Python 这类包体大的排在后面），再按主 ABI 与变体的贴合度（同时支持 arm64 与 armv7 的电视会选 64 位专版，而不是靠目录顺序），最后才是默认变体与目录顺序。面板会显示匹配方式（自动匹配 / 手动选择 / 回退默认），自动匹配时还写清依据，例如「Android API 22 · armeabi-v7a · Old TV 1080P → Android 5 兼容版」。
+
+几种兜底情况：
+
+- 读不到系统属性（老固件 getprop 输出为空、adb 掉线）→ 回退默认变体，面板标注「读不到电视系统属性，使用默认变体」，安装照常进行，不会因为探测失败挡住流程。
+- 手动在下拉里指定了具体变体 → 不再探测系统属性（省一次 adb 往返），完全尊重手动选择；点安装时中枢会用同一个具体变体重跑一次匹配，避免前端状态过期装错包。
+- 红果 MPV 版自动优先级低于标准版，因此只有手动选才会装；它和标准版包名不同，可以共存。
 
 ### 版本与校验
 
@@ -465,7 +483,7 @@ node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subtitle + /media
 node --import tsx scripts/e2e-embedded-subtitles.mjs # 内嵌字幕三模式 + 缓存路由 + DLNA DIDL
 npm run e2e-queue   # DLNA 播放队列 + 自动连播 + 停止/清空
-npm run e2e-tv-desktop # 电视助手：fake adb 覆盖 Aerial 安装/未授权/厂商拒绝/还原 + 红果三变体安装与共存 + TVBox 六变体（共享包名）
+npm run e2e-tv-desktop # 电视助手：fake adb 覆盖 Aerial 安装/未授权/厂商拒绝/还原 + 红果三变体安装与共存 + TVBox 六变体（共享包名）+ 按系统属性自动匹配变体
 npm run e2e-security # 安全边界与历史存储恢复
 npm run test:updater # 桌面自动更新器单元测试
 ```
