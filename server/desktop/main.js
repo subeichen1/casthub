@@ -1,15 +1,17 @@
 // CastHub 桌面壳：起进程 → 起 server → 开窗口加载 http://127.0.0.1:9420
 // 业务逻辑全部在 ../dist/index.js 的 startServer 中，本文件只做壳层编排。
-const { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage } = require("electron");
+const { app, BrowserWindow, Menu, Notification, Tray, ipcMain, nativeImage, net: electronNet } = require("electron");
 const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  DEFAULT_GITHUB_MIRRORS,
   downloadFile,
   fetchLatestReleaseFallback,
   normalizeRepoSlug,
+  normalizeSha256,
   parseChecksums,
   pickUpdateAssets,
   sha256File,
@@ -357,6 +359,44 @@ function createDirectUpdateNetwork(appRoot) {
   }
 }
 
+/**
+ * Chromium 网络栈（Electron net.fetch）：自动跟随 Windows 系统代理 / PAC / TUN。
+ * 实测 Node 直连 github.com 超时时，net.fetch 仍可完成 Releases 与资产下载，因此作为系统默认线路。
+ */
+function createSystemUpdateNetwork(appRoot, baseConfig) {
+  if (!electronNet || typeof electronNet.fetch !== "function") {
+    logToFile(appRoot, "UPDATE_SYSTEM_NETWORK_UNAVAILABLE Electron net.fetch 不可用");
+    return null;
+  }
+  const config = {
+    ...(baseConfig || {}),
+    proxy: "",
+    useEnvProxy: false,
+  };
+  return {
+    fetch: (input, init) => electronNet.fetch(String(input), init),
+    config,
+    close: async () => {},
+  };
+}
+
+/** 生成更新线路顺序：无显式代理时系统默认优先；配置了代理时配置线路优先，系统默认与直连兜底。 */
+function buildUpdateAttempts(appRoot) {
+  const primary = createUpdateNetwork(appRoot);
+  const system = createSystemUpdateNetwork(appRoot, primary.config);
+  const attempts = [];
+  if (hasConfiguredProxy(primary.config)) {
+    attempts.push({ label: "configured", display: "配置线路", network: primary });
+    if (system) attempts.push({ label: "system", display: "系统默认线路", network: system });
+    attempts.push({ label: "direct", display: "电脑默认线路", network: createDirectUpdateNetwork(appRoot) });
+  } else {
+    if (system) attempts.push({ label: "system", display: "系统默认线路", network: system });
+    attempts.push({ label: "configured", display: "直连线路", network: primary });
+  }
+  logToFile(appRoot, "UPDATE_NETWORK_ORDER " + attempts.map((attempt) => attempt.label).join(" > "));
+  return attempts;
+}
+
 function sendUpdateProgress(progress) {
   const payload = {
     phase: progress && progress.phase ? progress.phase : "error",
@@ -514,47 +554,40 @@ async function fetchReleaseFromApi(network, endpoint) {
 }
 
 /**
- * 先走 API；失败后自动切到 releases.atom 和 releases/latest 重定向。
- * 如果当前配置了代理，最后再用完全直连的电脑默认线路重试一次。
+ * 按 attempts 顺序尝试 GitHub API；每个线路失败后自动切到 releases.atom 和 releases/latest 重定向。
+ * attempts 由 buildUpdateAttempts 生成，通常为系统默认线路 → 配置线路 → 直连。
  */
-async function fetchLatestReleaseWithFallback(network, repoSlug, appRoot) {
+async function fetchLatestReleaseWithFallback(attempts, repoSlug, appRoot) {
   let apiError = null;
-  try {
-    const release = await fetchReleaseFromApi(network, updateEndpoint(repoSlug));
-    return { release, source: "api", via: "configured" };
-  } catch (error) {
-    apiError = error;
-  }
-
-  const apiMessage = apiError && apiError.message ? apiError.message : String(apiError);
-  logToFile(
-    appRoot,
-    "UPDATE_CHECK_FALLBACK reason=" +
-      apiMessage +
-      (apiError && apiError.rateLimitReset ? " reset=" + apiError.rateLimitReset : ""),
-  );
   const errors = [];
-  try {
-    const fallback = await fetchLatestReleaseFallback(network.fetch, repoSlug);
-    logToFile(appRoot, "UPDATE_CHECK_FALLBACK_OK source=" + fallback.source + " tag=" + fallback.tag);
-    return { ...fallback, via: "configured" };
-  } catch (error) {
-    errors.push(error && error.message ? error.message : String(error));
-  }
-
-  if (hasConfiguredProxy(network.config)) {
-    const direct = createDirectUpdateNetwork(appRoot);
+  for (const attempt of attempts) {
     try {
-      const fallback = await fetchLatestReleaseFallback(direct.fetch, repoSlug);
-      logToFile(appRoot, "UPDATE_CHECK_DIRECT_FALLBACK_OK source=" + fallback.source + " tag=" + fallback.tag);
-      return { ...fallback, via: "direct" };
+      const release = await fetchReleaseFromApi(attempt.network, updateEndpoint(repoSlug));
+      return { release, source: "api", via: attempt.label };
     } catch (error) {
-      errors.push("电脑默认线路：" + (error && error.message ? error.message : String(error)));
-    } finally {
-      await direct.close().catch(() => {});
+      if (!apiError) apiError = error;
+      logToFile(
+        appRoot,
+        "UPDATE_CHECK_FALLBACK line=" +
+          attempt.label +
+          " reason=" +
+          (error && error.message ? error.message : String(error)) +
+          (error && error.rateLimitReset ? " reset=" + error.rateLimitReset : ""),
+      );
+    }
+    try {
+      const fallback = await fetchLatestReleaseFallback(attempt.network.fetch, repoSlug);
+      logToFile(
+        appRoot,
+        "UPDATE_CHECK_FALLBACK_OK line=" + attempt.label + " source=" + fallback.source + " tag=" + fallback.tag,
+      );
+      return { ...fallback, via: attempt.label };
+    } catch (error) {
+      errors.push(attempt.display + "：" + (error && error.message ? error.message : String(error)));
     }
   }
 
+  const apiMessage = apiError && apiError.message ? apiError.message : "GitHub API 不可用";
   throw new Error(apiMessage + "；" + errors.join("；") + "。请检查网络，或开启系统代理 / TUN 代理（节点）后重试。");
 }
 
@@ -562,27 +595,34 @@ async function downloadAndVerifyWithNetwork(info, network, appRoot, tempDir, lab
   const cacheDir = path.join(appRoot, "update-cache");
   fs.mkdirSync(cacheDir, { recursive: true });
   const exePath = path.join(cacheDir, "CastHub-" + safeUpdateCacheName(info.tag) + ".exe");
-  const checksumPath = path.join(tempDir, "checksums.txt");
   logToFile(
     appRoot,
     "UPDATE_DOWNLOAD_START line=" + label + " url=" + info.exeUrl + " size=" + info.size + " cache=" + exePath,
   );
-  sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 0, message: "正在下载校验文件…" });
-  await downloadFile(info.checksumUrl, checksumPath, {
-    fetcher: network.fetch,
-    allowText: true,
-  });
-  const checksums = parseChecksums(fs.readFileSync(checksumPath, "utf8"));
-  let expected = checksums["CastHub.exe"];
-  if (!expected) {
-    const key = Object.keys(checksums).find((name) => name.toLowerCase() === "casthub.exe");
-    if (key) expected = checksums[key];
+  let expected = normalizeSha256(info.exeSha256);
+  if (expected) {
+    logToFile(appRoot, "UPDATE_CHECKSUM_SOURCE line=" + label + " api-digest sha256=" + expected);
+  } else {
+    // Atom/重定向兜底没有 API digest，只能从 Release 的 checksums.txt 取哈希。
+    const checksumPath = path.join(tempDir, "checksums.txt");
+    sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 0, message: "正在下载校验文件…" });
+    await downloadFile(info.checksumUrl, checksumPath, {
+      fetcher: network.fetch,
+      allowText: true,
+    });
+    const checksums = parseChecksums(fs.readFileSync(checksumPath, "utf8"));
+    expected = checksums["CastHub.exe"];
+    if (!expected) {
+      const key = Object.keys(checksums).find((name) => name.toLowerCase() === "casthub.exe");
+      if (key) expected = checksums[key];
+    }
+    if (!expected) throw new Error("checksums.txt 缺少 CastHub.exe 的 SHA-256");
   }
-  if (!expected) throw new Error("checksums.txt 缺少 CastHub.exe 的 SHA-256");
   sendUpdateProgress({ phase: "downloading", received: 0, total: info.size || 0, percent: 0, message: "正在下载 0%" });
   await downloadFile(info.exeUrl, exePath, {
     fetcher: network.fetch,
     githubMirror: network.config.githubMirror || "",
+    mirrors: DEFAULT_GITHUB_MIRRORS,
     expectedSha256: expected,
     onProgress: (progress) => {
       sendUpdateProgress({
@@ -614,28 +654,18 @@ async function downloadAndVerifyUpdate() {
   if (!info) throw new Error("没有可用更新");
   const appRoot = appRootPath || resolveAppRoot();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-update-"));
-  const primaryNetwork = createUpdateNetwork(appRoot);
-  const attempts = [{ label: "configured", display: "配置线路", network: primaryNetwork }];
-  if (hasConfiguredProxy(primaryNetwork.config)) {
-    attempts.push({
-      label: "direct",
-      display: "电脑默认线路",
-      network: createDirectUpdateNetwork(appRoot),
-    });
-  }
+  const attempts = buildUpdateAttempts(appRoot);
   let lastError = null;
   try {
     for (const attempt of attempts) {
+      sendUpdateProgress({
+        phase: "downloading",
+        received: 0,
+        total: info.size || 0,
+        percent: 0,
+        message: "正在通过" + attempt.display + "下载…",
+      });
       try {
-        if (attempt.label === "direct") {
-          sendUpdateProgress({
-            phase: "downloading",
-            received: 0,
-            total: info.size || 0,
-            percent: 0,
-            message: "配置线路不可用，正在尝试电脑默认线路…",
-          });
-        }
         return await downloadAndVerifyWithNetwork(info, attempt.network, appRoot, tempDir, attempt.label);
       } catch (error) {
         lastError = error;
@@ -646,8 +676,6 @@ async function downloadAndVerifyUpdate() {
             " " +
             (error && error.message ? error.message : String(error)),
         );
-      } finally {
-        if (attempt.label === "direct") await attempt.network.close().catch(() => {});
       }
     }
     const tried = attempts.map((attempt) => attempt.display).join("、");
@@ -664,7 +692,7 @@ async function downloadAndVerifyUpdate() {
     fs.rmSync(tempDir, { recursive: true, force: true });
     throw error;
   } finally {
-    await primaryNetwork.close().catch(() => {});
+    for (const attempt of attempts) await attempt.network.close().catch(() => {});
   }
 }
 
@@ -729,18 +757,20 @@ async function checkForUpdates(options) {
   const repoSlug = normalizeRepoSlug(settings.updateRepo);
   const endpoint = updateEndpoint(settings.updateRepo);
   logToFile(appRootPath, "UPDATE_CHECK_START manual=" + manual + " endpoint=" + endpoint);
-  const network = createUpdateNetwork(appRootPath);
+  const attempts = buildUpdateAttempts(appRootPath);
   try {
     let data;
     let source = "api";
-    let via = "configured";
+    let via = attempts[0] ? attempts[0].label : "configured";
     if (repoSlug) {
-      const result = await fetchLatestReleaseWithFallback(network, repoSlug, appRootPath);
+      const result = await fetchLatestReleaseWithFallback(attempts, repoSlug, appRootPath);
       data = result.release;
       source = result.source;
       via = result.via;
     } else {
-      data = await fetchReleaseFromApi(network, endpoint);
+      const primaryAttempt = attempts.find((attempt) => attempt.label === "configured") || attempts[0];
+      via = primaryAttempt.label;
+      data = await fetchReleaseFromApi(primaryAttempt.network, endpoint);
     }
     const latestTag = typeof data.tag_name === "string" ? data.tag_name : "";
     const current = app.getVersion();
@@ -752,6 +782,7 @@ async function checkForUpdates(options) {
         exeUrl: assets.exeUrl,
         checksumUrl: assets.checksumUrl,
         size: assets.exeSize,
+        exeSha256: assets.exeSha256,
       };
       logToFile(
         appRootPath,
@@ -766,7 +797,9 @@ async function checkForUpdates(options) {
           " exe=" +
           assets.exeUrl +
           " size=" +
-          assets.exeSize,
+          assets.exeSize +
+          " digest=" +
+          (assets.exeSha256 ? "yes" : "no"),
       );
       showNotification("发现新版本", "CastHub " + latestTag + " 已发布，可在桌面设置或托盘菜单立即更新。", appRootPath);
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -790,7 +823,7 @@ async function checkForUpdates(options) {
     logToFile(appRootPath, "UPDATE_CHECK_FAILED " + message);
     return { status: "error", message };
   } finally {
-    await network.close().catch(() => {});
+    for (const attempt of attempts) await attempt.network.close().catch(() => {});
   }
 }
 

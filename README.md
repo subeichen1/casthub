@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.3.2**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.3.3**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -255,6 +255,8 @@ CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可�
 从 v0.3.1 起，自动更新会复用「网络设置」中的代理、GitHub 镜像与 GitHub Token：检查更新和下载资产都可走 `network.proxy`；`network.githubToken` 仅发送给 `api.github.com`；`CastHub.exe` 仅在 `checksums.txt` 提供合法 SHA-256 时才启用 `network.githubMirror`，`checksums.txt` 本身始终从 GitHub 原始地址获取。下载支持同源断点续传与多源自动回退，缓存文件位于 `update-cache/CastHub-<tag>.exe`。
 
 从 v0.3.2 起，检查更新遇到 GitHub API 403/限流会自动切换 `releases.atom` 和 `releases/latest` 重定向；配置了代理时，所有下载线路失败后还会尝试电脑默认直连线路。全部线路均失败时，界面会提示检查网络，或开启系统代理 / TUN 代理（节点）后重试。
+
+从 v0.3.3 起，桌面更新优先使用 Electron/Chromium 网络栈，自动跟随 Windows 系统代理、PAC 与 TUN；未显式配置代理时按「系统默认线路 → 直连线路」尝试，配置了代理时按「配置线路 → 系统默认线路 → 电脑默认线路」尝试。GitHub API 返回的 Release asset `digest` 会直接作为 `CastHub.exe` 的可信 SHA-256，省去先下载 `checksums.txt`；没有 digest 时仍回退到 `checksums.txt`。下载层在已有可信 SHA-256 的前提下内置 `gh-proxy.com`、`ghproxy.net` 两个国内加速候选，并继续保留同源 Range 断点续传。
 
 > **旧版本限制**：v0.2.0 及更早版本没有自动更新器，第一次必须从 Releases 页面手动下载并安装 v0.2.1 或更高版本；从包含自动更新器的版本开始，之后才能在应用内一键更新。
 

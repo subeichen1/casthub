@@ -14,8 +14,8 @@ android {
         applicationId = "io.casthub.tv"
         minSdk = 23
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.3.2"
+        versionCode = 10
+        versionName = "0.3.3"
     }
 
     signingConfigs {

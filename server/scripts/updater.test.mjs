@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const {
+  DEFAULT_GITHUB_MIRRORS,
   buildDownloadCandidates,
   buildMirrorUrl,
   buildReleaseInfoFromTag,
@@ -47,6 +48,7 @@ test("pickUpdateAssets finds case-insensitive assets and size", () => {
       name: "CASTHUB.EXE",
       browser_download_url: "https://github.com/example/repo/releases/download/v1/CastHub.exe",
       size: 12345,
+      digest: "sha256:" + "a".repeat(64),
     },
     {
       name: "checksums.txt",
@@ -58,7 +60,28 @@ test("pickUpdateAssets finds case-insensitive assets and size", () => {
     exeUrl: assets[0].browser_download_url,
     checksumUrl: assets[1].browser_download_url,
     exeSize: 12345,
+    exeSha256: "a".repeat(64),
   });
+});
+
+test("pickUpdateAssets tolerates a missing or malformed digest", () => {
+  const assets = [
+    { name: "CastHub.exe", browser_download_url: "https://github.com/example/repo/releases/download/v1/CastHub.exe" },
+    {
+      name: "checksums.txt",
+      browser_download_url: "https://github.com/example/repo/releases/download/v1/checksums.txt",
+    },
+  ];
+  assert.equal(pickUpdateAssets(assets).exeSha256, "");
+  assets[0].digest = "sha512:not-a-sha256";
+  assert.equal(pickUpdateAssets(assets).exeSha256, "");
+});
+
+test("default GitHub mirrors are valid HTTPS prefixes", () => {
+  assert.ok(DEFAULT_GITHUB_MIRRORS.length >= 2);
+  for (const mirror of DEFAULT_GITHUB_MIRRORS) {
+    assert.equal(isAllowedDownloadUrl(mirror, { mirrorPrefix: true }), true, mirror);
+  }
 });
 
 test("pickUpdateAssets rejects missing exe or checksums", () => {

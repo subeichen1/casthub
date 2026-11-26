@@ -9,6 +9,8 @@ const DOWNLOAD_HEADER_TIMEOUT_MS = 15 * 1000;
 const DOWNLOAD_IDLE_TIMEOUT_MS = 30 * 1000;
 const MAX_UPDATE_BYTES = 350 * 1024 * 1024;
 const GITHUB_DOWNLOAD_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"]);
+// 国内可用的 GitHub 下载加速前缀。仅在已有可信 SHA-256 时启用，见 downloadFile。
+const DEFAULT_GITHUB_MIRRORS = Object.freeze(["https://gh-proxy.com", "https://ghproxy.net"]);
 
 function isHttpsUrl(value) {
   if (typeof value !== "string") return false;
@@ -150,6 +152,8 @@ function pickUpdateAssets(assets) {
     exeUrl,
     checksumUrl,
     exeSize: Number.isFinite(size) && size > 0 ? size : 0,
+    // GitHub Release API 自带资产摘要（sha256:...），可省去先下载 checksums.txt。
+    exeSha256: normalizeSha256(exe.digest),
   };
 }
 
@@ -655,6 +659,7 @@ module.exports = {
   DOWNLOAD_TIMEOUT_MS,
   DOWNLOAD_HEADER_TIMEOUT_MS,
   DOWNLOAD_IDLE_TIMEOUT_MS,
+  DEFAULT_GITHUB_MIRRORS,
   isHttpsUrl,
   isAllowedDownloadUrl,
   isGitHubDownloadUrl,
