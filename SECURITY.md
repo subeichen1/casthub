@@ -27,7 +27,7 @@ CastHub 是家庭局域网内的单用户投屏工具，不是公网服务，也
 1. **PC 本机**：Electron 壳和本地进程视为可信；但桌面壳加载的网页仍按不可信输入处理。
 2. **家庭局域网**：默认不可信。任何同网段主机都可能发起扫描、连接、HTTP 请求或 SSDP 响应。
 3. **电视端 App**：只信任持正确配对码的中枢；电视自身不存储媒体。
-4. **外部互联网**：完全不可信；项目不主动上传媒体。除获取第三方 TV 应用发布信息（GitHub API、静态目录及用户配置的 GitHub 镜像）外，不调用云端 API。
+4. **外部互联网**：完全不可信；项目不主动上传媒体。除获取第三方 TV 应用发布信息和检查 CastHub 自身桌面更新（GitHub API、静态目录及用户配置的 GitHub 镜像）外，不调用云端 API。
 5. **DLNA 设备**：设备描述、SOAP 响应和 `device.xml` 均视为不可信输入。
 
 ## 3. 攻击者模型
@@ -61,6 +61,7 @@ CastHub 是家庭局域网内的单用户投屏工具，不是公网服务，也
 - 日志：服务端日志轮转 5 MiB × 3；桌面壳日志轮转 5 MiB × 1；签名媒体 URL 不写入日志。
 - 发布：Windows Authenticode 与 Android release keystore 由 CI Secrets 注入；Release 生成 `checksums.txt`；CI 执行 `npm ci`、类型检查、完整依赖 `npm audit --audit-level=high` 和 CycloneDX SBOM。
 - 第三方 TV 应用：仅索引上游 GitHub Releases；APK 仅在具备合法 SHA-256 时启用镜像，下载后强制校验；镜像前缀仅允许 `github.com`、`raw.githubusercontent.com`、`objects.githubusercontent.com`；GitHub Token 仅发送至 `api.github.com`，镜像与下载节点不携带 `Authorization`；详见 README 的「下载安全与容错边界」。
+- 桌面自动更新：检查与下载复用 `network.proxy`；`CastHub.exe` 仅在 `checksums.txt` 提供合法 SHA-256 时启用 `network.githubMirror`，`checksums.txt` 始终从 GitHub 原始地址获取；下载支持同源 `Range` 续传、多源回退，并同时执行 SHA-256 与 Authenticode 校验。
 
 ## 6. 隐私说明
 

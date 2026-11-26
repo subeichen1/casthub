@@ -19,7 +19,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 
 ![CastHub 浏览器控制台](docs/console-playing.png)
 
-> 当前版本：**v0.3.0**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
+> 当前版本：**v0.3.1**。主线投屏链路已通过自动化端到端测试；DLNA 是兼容性降级路径，具体限制见 [DLNA 兼容模式](#dlna-兼容模式降级)。
 
 ## 核心特性
 
@@ -251,6 +251,8 @@ portable 版请慎开：启动项指向 exe 当前路径，移动或删除 exe�
 CastHub 启动 5 秒后检查一次，之后每 24 小时检查一次；也可以在托盘菜单或桌面设置面板点「检查更新」。内置默认更新仓库为 `subeichen1/casthub`，所有用户无需额外配置即可检查 GitHub Releases；程序读取 `releases/latest`，将 `tag_name` 与当前三段版本号比较，发现新版本会发系统通知，并在桌面设置面板和托盘菜单显示「立即更新」。
 
 点击「立即更新」后，桌面设置面板会依次显示下载进度「正在下载 42%」、校验状态「正在校验…」和安装状态「正在安装，应用即将重启…」。整个流程不打开浏览器、不跳转 GitHub 页面，也不需要手动下载或替换文件。程序只使用 GitHub Release `assets` 里的 `CastHub.exe` 与 `checksums.txt`，强制核对 `CastHub.exe` 的 SHA-256；缺少任一资产、下载失败或哈希不匹配都会中止更新并保留现有 exe。更新 helper 会等待旧进程退出，并在外层 portable 进程释放文件锁后重试替换，再把新版本启动起来。
+
+从 v0.3.1 起，自动更新会复用「网络设置」中的代理、GitHub 镜像与 GitHub Token：检查更新和下载资产都可走 `network.proxy`；`network.githubToken` 仅发送给 `api.github.com`；`CastHub.exe` 仅在 `checksums.txt` 提供合法 SHA-256 时才启用 `network.githubMirror`，`checksums.txt` 本身始终从 GitHub 原始地址获取。下载支持同源断点续传与多源自动回退，缓存文件位于 `update-cache/CastHub-<tag>.exe`。
 
 > **旧版本限制**：v0.2.0 及更早版本没有自动更新器，第一次必须从 Releases 页面手动下载并安装 v0.2.1 或更高版本；从包含自动更新器的版本开始，之后才能在应用内一键更新。
 
@@ -535,6 +537,7 @@ Aerial 会接管电视的默认桌面与 Home 键，属于对电视系统的修�
   * `Authorization: Bearer <githubToken>` 请求头仅在访问 `api.github.com` 时附加，绝不发送给任何镜像站或文件下载节点。
   * Web 控制台仅显示 Token 是否已配置，留空保存不会覆盖现有 Token，支持显式一键清除。
 * **可靠传输保护**：支持同源安全 `Range` 断点续传（切换镜像源时自动清空旧分片，严禁跨源拼接）、同文件并发下载去重，以及默认 200 MiB 的单包体积上限保护。
+* **桌面自动更新复用同一组边界**：更新检查与 `CastHub.exe` 下载使用 `network.proxy`；仅当 `checksums.txt` 提供合法 SHA-256 时才对 `CastHub.exe` 启用 `network.githubMirror`；`checksums.txt` 始终从 GitHub 原始地址获取；下载支持同源 `Range` 续传、多源回退与 350 MiB 单包上限。
 
 ---
 

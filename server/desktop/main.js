@@ -299,6 +299,33 @@ function updateEndpoint(repo) {
   return "https://api.github.com/repos/" + repo.replace(/^\/+|\/+$/g, "") + "/releases/latest";
 }
 
+function safeUpdateCacheName(value) {
+  return String(value || "latest").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 48) || "latest";
+}
+
+/**
+ * 桌面更新复用服务端 network 配置：优先使用编译后的 network-config/network-fetch，
+ * 开发环境尚未 build 时退化为全局 fetch（不阻断原有更新逻辑）。
+ */
+function createUpdateNetwork(appRoot) {
+  let config = null;
+  try {
+    const { readStoredNetworkConfig, resolveNetworkConfig } = require("../dist/network-config.js");
+    config = resolveNetworkConfig(readStoredNetworkConfig(appRoot), process.env);
+  } catch (error) {
+    logToFile(appRoot, "UPDATE_NETWORK_CONFIG_FALLBACK " + (error && error.message ? error.message : String(error)));
+    return { fetch: (...args) => globalThis.fetch(...args), config: { githubMirror: "" }, close: async () => {} };
+  }
+  try {
+    const { NetworkClient } = require("../dist/network-fetch.js");
+    const client = new NetworkClient(config);
+    return { fetch: client.fetch, config, close: () => client.close() };
+  } catch (error) {
+    logToFile(appRoot, "UPDATE_NETWORK_CLIENT_FALLBACK " + (error && error.message ? error.message : String(error)));
+    return { fetch: (...args) => globalThis.fetch(...args), config, close: async () => {} };
+  }
+}
+
 function sendUpdateProgress(progress) {
   const payload = {
     phase: progress && progress.phase ? progress.phase : "error",
@@ -438,22 +465,18 @@ async function downloadAndVerifyUpdate() {
   if (!info) throw new Error("没有可用更新");
   const appRoot = appRootPath || resolveAppRoot();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-update-"));
-  const exePath = path.join(tempDir, "update.exe");
+  const cacheDir = path.join(appRoot, "update-cache");
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const exePath = path.join(cacheDir, "CastHub-" + safeUpdateCacheName(info.tag) + ".exe");
   const checksumPath = path.join(tempDir, "checksums.txt");
+  const network = createUpdateNetwork(appRoot);
   try {
-    logToFile(appRoot, "UPDATE_DOWNLOAD_START url=" + info.exeUrl + " size=" + info.size);
-    await downloadFile(info.exeUrl, exePath, (progress) => {
-      sendUpdateProgress({
-        phase: "downloading",
-        received: progress.received,
-        total: progress.total,
-        percent: progress.percent,
-        message: "正在下载 " + progress.percent + "%",
-      });
+    logToFile(appRoot, "UPDATE_DOWNLOAD_START url=" + info.exeUrl + " size=" + info.size + " cache=" + exePath);
+    sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 0, message: "正在下载校验文件…" });
+    await downloadFile(info.checksumUrl, checksumPath, {
+      fetcher: network.fetch,
+      allowText: true,
     });
-    logToFile(appRoot, "UPDATE_DOWNLOAD_DONE path=" + exePath);
-    sendUpdateProgress({ phase: "downloading", received: 0, total: 0, percent: 100, message: "正在下载校验文件…" });
-    await downloadFile(info.checksumUrl, checksumPath, () => {});
     const checksums = parseChecksums(fs.readFileSync(checksumPath, "utf8"));
     let expected = checksums["CastHub.exe"];
     if (!expected) {
@@ -461,6 +484,22 @@ async function downloadAndVerifyUpdate() {
       if (key) expected = checksums[key];
     }
     if (!expected) throw new Error("checksums.txt 缺少 CastHub.exe 的 SHA-256");
+    sendUpdateProgress({ phase: "downloading", received: 0, total: info.size || 0, percent: 0, message: "正在下载 0%" });
+    await downloadFile(info.exeUrl, exePath, {
+      fetcher: network.fetch,
+      githubMirror: network.config.githubMirror || "",
+      expectedSha256: expected,
+      onProgress: (progress) => {
+        sendUpdateProgress({
+          phase: "downloading",
+          received: progress.received,
+          total: progress.total,
+          percent: progress.percent,
+          message: "正在下载 " + progress.percent + "%",
+        });
+      },
+    });
+    logToFile(appRoot, "UPDATE_DOWNLOAD_DONE path=" + exePath);
     sendUpdateProgress({ phase: "verifying", received: 0, total: 0, percent: 100, message: "正在校验…" });
     const actual = await sha256File(exePath);
     if (actual.toLowerCase() !== expected.toLowerCase()) {
@@ -474,6 +513,8 @@ async function downloadAndVerifyUpdate() {
     logToFile(appRoot, "UPDATE_VERIFY_FAILED " + (error && error.message ? error.message : String(error)));
     fs.rmSync(tempDir, { recursive: true, force: true });
     throw error;
+  } finally {
+    await network.close().catch(() => {});
   }
 }
 
@@ -531,10 +572,19 @@ async function checkForUpdates(options) {
   }
   const endpoint = updateEndpoint(settings.updateRepo);
   logToFile(appRootPath, "UPDATE_CHECK_START manual=" + manual + " endpoint=" + endpoint);
+  const network = createUpdateNetwork(appRootPath);
   try {
     if (!/^https:/i.test(endpoint)) throw new Error("更新仓库必须使用 HTTPS");
-    const response = await fetch(endpoint, {
-      headers: { Accept: "application/vnd.github+json", "User-Agent": "CastHub" },
+    const headers = { Accept: "application/vnd.github+json", "User-Agent": "CastHub" };
+    try {
+      if (new URL(endpoint).hostname === "api.github.com" && network.config.githubToken) {
+        headers.Authorization = "Bearer " + network.config.githubToken;
+      }
+    } catch {
+      // URL 校验由 updateEndpoint/上游 fetch 处理
+    }
+    const response = await network.fetch(endpoint, {
+      headers,
       signal: AbortSignal.timeout(10000),
     });
     if (!response.ok) throw new Error("HTTP " + response.status);
@@ -575,6 +625,8 @@ async function checkForUpdates(options) {
     const message = error && error.message ? error.message : String(error);
     logToFile(appRootPath, "UPDATE_CHECK_FAILED " + message);
     return { status: "error", message };
+  } finally {
+    await network.close().catch(() => {});
   }
 }
 

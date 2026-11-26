@@ -9,8 +9,12 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const {
+  buildDownloadCandidates,
+  buildMirrorUrl,
   buildUpdateHelperScript,
   downloadFile,
+  isAllowedDownloadUrl,
+  normalizeSha256,
   parseChecksums,
   pickUpdateAssets,
   sha256File,
@@ -103,6 +107,212 @@ test("downloadFile streams bytes and reports progress", async () => {
     assert.equal(progress[progress.length - 1].percent, 100);
   } finally {
     globalThis.fetch = originalFetch;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("buildDownloadCandidates only mirrors GitHub downloads and deduplicates", () => {
+  const github = "https://github.com/example/repo/releases/download/v1/CastHub.exe";
+  assert.deepEqual(buildDownloadCandidates(github, { githubMirror: "https://mirror.example/gh/" }), [
+    "https://mirror.example/gh/" + github,
+    github,
+  ]);
+  assert.deepEqual(
+    buildDownloadCandidates(github, {
+      githubMirror: "https://mirror.example/gh/",
+      mirrors: ["https://mirror.example/gh", "https://mirror2.example"],
+    }),
+    ["https://mirror.example/gh/" + github, "https://mirror2.example/" + github, github],
+  );
+  assert.deepEqual(
+    buildDownloadCandidates("https://aerial.qust.me/download/aerial-standard.apk", {
+      githubMirror: "https://mirror.example/gh",
+    }),
+    ["https://aerial.qust.me/download/aerial-standard.apk"],
+  );
+  assert.equal(buildMirrorUrl(github, "ftp://mirror.example"), null);
+  assert.equal(buildMirrorUrl("https://aerial.qust.me/a.apk", "https://mirror.example"), null);
+});
+
+test("download URL validation rejects private and non-HTTPS addresses", () => {
+  assert.equal(isAllowedDownloadUrl("https://github.com/example/CastHub.exe"), true);
+  assert.equal(isAllowedDownloadUrl("http://127.0.0.1:1234/CastHub.exe"), false);
+  assert.equal(isAllowedDownloadUrl("ftp://github.com/example/CastHub.exe"), false);
+  assert.equal(isAllowedDownloadUrl("https://user:dummy@github.com/example/CastHub.exe"), false);
+  assert.equal(isAllowedDownloadUrl("https://192.168.1.10/CastHub.exe"), false);
+  assert.equal(normalizeSha256("sha256:" + "A".repeat(64)), "a".repeat(64));
+});
+
+function binaryResponse(body, init = {}) {
+  return new Response(body, {
+    status: init.status || 200,
+    headers: {
+      "content-type": "application/octet-stream",
+      "content-length": String(body.length),
+      ...(init.headers || {}),
+    },
+  });
+}
+
+test("downloadFile falls back from an HTML mirror to the origin", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-mirror-html-"));
+  const destination = path.join(dir, "CastHub.exe");
+  const body = Buffer.from("trusted update payload");
+  const expected = crypto.createHash("sha256").update(body).digest("hex");
+  const calls = [];
+  const fetcher = async (url) => {
+    calls.push(String(url));
+    if (String(url).startsWith("https://mirror.example/gh/")) {
+      return new Response("<html>mirror unavailable</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }
+    return binaryResponse(body);
+  };
+  try {
+    const result = await downloadFile("https://github.com/example/CastHub.exe", destination, {
+      fetcher,
+      githubMirror: "https://mirror.example/gh",
+      expectedSha256: expected,
+    });
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].startsWith("https://mirror.example/gh/"));
+    assert.equal(calls[1], "https://github.com/example/CastHub.exe");
+    assert.deepEqual(fs.readFileSync(destination), body);
+    assert.equal(result.received, body.length);
+    assert.equal(fs.existsSync(destination + ".meta.json"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("downloadFile skips third-party mirrors when SHA-256 is absent", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-no-sha-"));
+  const destination = path.join(dir, "CastHub.exe");
+  const body = Buffer.from("no hash means no mirror");
+  const calls = [];
+  try {
+    await downloadFile("https://github.com/example/CastHub.exe", destination, {
+      fetcher: async (url) => {
+        calls.push(String(url));
+        return binaryResponse(body);
+      },
+      githubMirror: "https://mirror.example/gh",
+    });
+    assert.deepEqual(calls, ["https://github.com/example/CastHub.exe"]);
+    assert.deepEqual(fs.readFileSync(destination), body);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("downloadFile rejects a tampered mirror and retries the origin", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-tamper-"));
+  const destination = path.join(dir, "CastHub.exe");
+  const body = Buffer.from("the real update binary");
+  const expected = crypto.createHash("sha256").update(body).digest("hex");
+  const calls = [];
+  const fetcher = async (url) => {
+    calls.push(String(url));
+    if (String(url).startsWith("https://mirror.example/gh/")) return binaryResponse(Buffer.from("tampered"));
+    return binaryResponse(body);
+  };
+  try {
+    await downloadFile("https://github.com/example/CastHub.exe", destination, {
+      fetcher,
+      githubMirror: "https://mirror.example/gh",
+      expectedSha256: expected,
+    });
+    assert.equal(calls.length, 2);
+    assert.deepEqual(fs.readFileSync(destination), body);
+    assert.equal(fs.existsSync(destination + ".meta.json"), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("downloadFile resumes a same-source partial with Range and 206", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-resume-"));
+  const destination = path.join(dir, "CastHub.exe");
+  const body = Buffer.from("0123456789abcdefghijklmnopqrstuvwxyz");
+  const half = Math.floor(body.length / 2);
+  const expected = crypto.createHash("sha256").update(body).digest("hex");
+  let calls = 0;
+  const fetcher = async (_url, init = {}) => {
+    calls += 1;
+    if (calls === 1) {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(body.subarray(0, half)));
+          setTimeout(() => controller.error(new Error("socket reset")), 5);
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "application/octet-stream", "content-length": String(body.length) },
+      });
+    }
+    assert.equal(init.headers && init.headers.Range, "bytes=" + half + "-");
+    return new Response(body.subarray(half), {
+      status: 206,
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(body.length - half),
+        "content-range": "bytes " + half + "-" + (body.length - 1) + "/" + body.length,
+      },
+    });
+  };
+  try {
+    const result = await downloadFile("https://github.com/example/CastHub.exe", destination, {
+      fetcher,
+      expectedSha256: expected,
+    });
+    assert.equal(calls, 2);
+    assert.deepEqual(fs.readFileSync(destination), body);
+    assert.equal(result.received, body.length);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("downloadFile switches candidates without reusing an old Range", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "casthub-switch-"));
+  const destination = path.join(dir, "CastHub.exe");
+  const body = Buffer.from("switch-source-without-cross-source-range");
+  const half = Math.floor(body.length / 2);
+  const expected = crypto.createHash("sha256").update(body).digest("hex");
+  let mirrorCalls = 0;
+  let originCalls = 0;
+  const fetcher = async (url, init = {}) => {
+    if (String(url).startsWith("https://mirror.example/gh/")) {
+      mirrorCalls += 1;
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array(body.subarray(0, half)));
+          setTimeout(() => controller.error(new Error("mirror reset")), 5);
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { "content-type": "application/octet-stream", "content-length": String(body.length) },
+      });
+    }
+    originCalls += 1;
+    assert.equal(init.headers && init.headers.Range, undefined);
+    return binaryResponse(body);
+  };
+  try {
+    await downloadFile("https://github.com/example/CastHub.exe", destination, {
+      fetcher,
+      githubMirror: "https://mirror.example/gh",
+      expectedSha256: expected,
+    });
+    assert.equal(mirrorCalls, 2);
+    assert.equal(originCalls, 1);
+    assert.deepEqual(fs.readFileSync(destination), body);
+    assert.equal(fs.existsSync(destination + ".meta.json"), false);
+  } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
