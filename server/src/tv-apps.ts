@@ -1,6 +1,8 @@
 // 电视应用目录：把「下载地址 + adb 命令模板」抽成可扩展的目录，Aerial 桌面与红果短剧共用同一套安装流程。
 // 本模块只有静态数据与纯解析函数（不发网络、不碰文件系统），方便单测；网络与 adb 都在 tv-desktop.ts。
 
+import tvAppsMeta from "./tv-apps-meta.json";
+
 export type TvAppId = "aerial" | "hongguo" | "tvbox";
 
 /** 同一个应用的不同发行变体（独立包名，可同时安装）。 */
@@ -59,13 +61,26 @@ export interface TvAppReleaseInfo {
   channel: "github" | "mirror" | "custom";
 }
 
+interface TvAppMetaEntry {
+  id: string;
+  repo: string;
+  releaseTagPattern?: string;
+}
+
+/** 发布仓库等纯数据放在 JSON 里，供 TS 后端与 build-tv-catalog.mjs 共用，避免两处漂移。 */
+function appMeta(id: TvAppId): Pick<TvAppDefinition, "repo" | "releaseTagPattern"> {
+  const entry = (tvAppsMeta as { apps: TvAppMetaEntry[] }).apps.find((item) => item.id === id);
+  if (!entry) throw new Error("tv-apps-meta.json 缺少应用: " + id);
+  return { repo: entry.repo, releaseTagPattern: entry.releaseTagPattern };
+}
+
 const AERIAL: TvAppDefinition = {
   id: "aerial",
   name: "Aerial 极简桌面",
   vendor: "pengchujin/aerial-tv",
   description: "把电视桌面换成 Apple TV 风格的极简桌面（会接管 Home 键）。",
   homepage: "https://github.com/pengchujin/aerial-tv",
-  repo: "pengchujin/aerial-tv",
+  ...appMeta("aerial"),
   installKind: "launcher",
   defaultVariant: "standard",
   variants: [
@@ -89,9 +104,8 @@ const HONGGUO: TvAppDefinition = {
   vendor: "aston314/hongguo-tv",
   description: "第三方短剧播放应用（不接管桌面，装完就是一个普通 App）。",
   homepage: "https://github.com/aston314/hongguo-tv",
-  repo: "aston314/hongguo-tv-releases",
+  ...appMeta("hongguo"),
   // 该仓库同时发布 desktop-v* / webos-v* / linux-v*，只有 vX.Y.Z 是 Android APK。
-  releaseTagPattern: "^v\\d+\\.\\d+\\.\\d+",
   installKind: "app",
   defaultVariant: "standard",
   variants: [
@@ -142,7 +156,7 @@ const TVBOX: TvAppDefinition = {
   vendor: "j4Uq/TVBoxOSC",
   description: "第三方影视聚合客户端（不接管桌面，装完是一个普通 App），源地址需要自己配置。",
   homepage: "https://github.com/j4Uq/TVBoxOSC",
-  repo: "j4Uq/TVBoxOSC",
+  ...appMeta("tvbox"),
   installKind: "app",
   defaultVariant: "java",
   variants: [
@@ -538,9 +552,9 @@ export function matchVariantForDevice(
     return app.variants.indexOf(a) - app.variants.indexOf(b);
   });
   const chosen = ranked[0];
+  // 只要设备属性参与了匹配，即使命中默认变体也算 auto；fallback 只用于信息不足/全部被排除。
   return {
     variant: chosen,
-    // 只要设备属性参与了匹配，即使命中默认变体也算 auto；fallback 只用于信息不足/全部被排除。
     source: "auto",
     reason: describeProfile(profile) + " → " + chosen.name
   };

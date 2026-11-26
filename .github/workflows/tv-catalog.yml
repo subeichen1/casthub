@@ -1,0 +1,67 @@
+name: TV Catalog
+
+on:
+  schedule:
+    - cron: "0 */4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tv-catalog
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build TV app catalog
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Prepare orphan catalog-data worktree
+        run: |
+          set -euo pipefail
+          if git fetch origin catalog-data:refs/remotes/origin/catalog-data; then
+            git worktree add -B catalog-data catalog-data origin/catalog-data
+          else
+            mkdir catalog-data
+            git -C catalog-data init -q
+            git -C catalog-data remote add origin "$(git remote get-url origin)"
+            git -C catalog-data checkout --orphan catalog-data
+          fi
+
+      - name: Generate catalog
+        id: generate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          previous="catalog-data/tv-catalog.json"
+          if [ ! -f "$previous" ]; then previous=""; fi
+          output="$(node server/scripts/build-tv-catalog.mjs --previous "$previous" --out catalog-data/tv-catalog.json)"
+          printf '%s\n' "$output"
+          if grep -q "NO_CHANGES" <<< "$output"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit and push catalog-data
+        if: steps.generate.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git -C catalog-data config user.name "github-actions[bot]"
+          git -C catalog-data config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C catalog-data add tv-catalog.json
+          git -C catalog-data commit -m "chore: update TV app catalog [skip ci]"
+          git -C catalog-data push origin HEAD:catalog-data

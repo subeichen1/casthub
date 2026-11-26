@@ -19,18 +19,14 @@ import {
   parseAppCustomRelease,
   parseAppRelease,
   parseDeviceProfile,
-  releaseJsonEnvName,
-  releasesApiUrl,
-  releasesListApiUrl,
-  selectReleaseFromList,
   variantSummary
 } from "./tv-apps";
+import { resolveTvAppRelease, type TvReleaseResolverOptions } from "./tv-release-resolver";
 
 /** 兼容旧调用方：Aerial 发布信息的结构就是通用发布信息。 */
 export type AerialReleaseInfo = TvAppReleaseInfo;
 
 /** 官网直链兜底（拿不到版本号与校验和，只在 GitHub 查询失败时使用）。 */
-const MIRROR_APK_URL = "https://aerial.qust.me/download/aerial-standard.apk";
 const PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
 const ADB_CONNECT_TIMEOUT_MS = 20_000;
 const ADB_INSTALL_TIMEOUT_MS = 180_000;
@@ -38,8 +34,6 @@ const ADB_STEP_TIMEOUT_MS = 20_000;
 const ADB_VERSION_TIMEOUT_MS = 8_000;
 const MAX_TOOL_OUTPUT_BYTES = 256 * 1024;
 const RELEASE_CACHE_MS = 10 * 60 * 1000;
-const RELEASE_FETCH_TIMEOUT_MS = 12_000;
-const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 /** APK 默认上限 200 MiB；应用可用 maxApkBytes 覆盖。 */
 const MAX_APK_BYTES = 200 * 1024 * 1024;
 
@@ -370,89 +364,65 @@ export function parseCustomRelease(payload: unknown): TvAppReleaseInfo | null {
   return parseAppCustomRelease(app, defaultVariantOf(app), payload);
 }
 
-async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
-  const response = await fetch(url, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "CastHub" },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  if (!response.ok) throw new Error("HTTP " + response.status + " " + url);
-  return (await response.json()) as unknown;
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
 }
 
-/** 发布信息缓存（按 appId:variantId 分槽），避免每次打开面板都打 GitHub API。 */
-const releaseCache = new Map<string, { at: number; value: TvAppReleaseInfo | null; error: string | null }>();
+/** 仅供本地 E2E：显式开关 + 严格回环地址，生产 HTTPS 校验不受影响。 */
+function allowInsecureLoopback(): boolean {
+  return envValue("CASTHUB_ALLOW_INSECURE_LOOPBACK") === "1";
+}
+
+/** 发布信息内存缓存（按 appId:variantId 分槽），磁盘缓存由 tv-release-resolver 负责。 */
+const releaseCache = new Map<
+  string,
+  { at: number; value: TvAppReleaseInfo | null; error: string | null; mirrors: string[] }
+>();
+let fallbackCacheDir: string | null = null;
 
 export function clearReleaseCache(): void {
   releaseCache.clear();
 }
 
-/** 取指定应用变体的最新发布信息；Aerial 失败时回退官网直链，其他应用没有兜底。 */
+export interface FetchAppReleaseOptions {
+  force?: boolean;
+  /** 服务使用 dataDir/cache/tv-desktop；测试或旧调用方缺省时使用进程级临时目录。 */
+  cacheDir?: string;
+  resolverOptions?: Omit<TvReleaseResolverOptions, "cacheDir" | "force">;
+}
+
+/** 取指定应用变体的最新发布信息：静态目录优先，GitHub API 兜底，Aerial 最终回退官网直链。 */
 export async function fetchAppRelease(
   app: TvAppDefinition,
   variant: TvAppVariant,
-  options?: { force?: boolean }
-): Promise<{ release: TvAppReleaseInfo | null; error: string | null }> {
+  options?: FetchAppReleaseOptions
+): Promise<{ release: TvAppReleaseInfo | null; error: string | null; mirrors: string[] }> {
+  let cacheDir = options?.cacheDir;
+  if (!cacheDir) {
+    fallbackCacheDir ??= path.join(os.tmpdir(), "casthub-tv-desktop-" + process.pid);
+    cacheDir = fallbackCacheDir;
+  }
   const key = app.id + ":" + variant.id;
   const cached = releaseCache.get(key);
   if (!options?.force && cached && Date.now() - cached.at < RELEASE_CACHE_MS) {
-    return { release: cached.value, error: cached.error };
+    return { release: cached.value, error: cached.error, mirrors: cached.mirrors };
   }
-  const customPath = envValue(releaseJsonEnvName(app));
-  let release: TvAppReleaseInfo | null = null;
-  let error: string | null = null;
-  if (customPath) {
-    try {
-      // Windows 记事本 / PowerShell 5 写出的 JSON 常带 UTF-8 BOM，JSON.parse 会直接报错，这里先剥掉。
-      const customText = fs.readFileSync(customPath, "utf8").replace(/^\uFEFF/, "");
-      release = parseAppCustomRelease(app, variant, JSON.parse(customText));
-      if (!release) error = releaseJsonEnvName(app) + " 缺少 apkUrl（或 variant 不匹配）";
-    } catch (caught) {
-      error = "读取 " + releaseJsonEnvName(app) + " 失败: " + errorMessage(caught);
-    }
-  } else {
-    try {
-      const apiBase = envValue("CASTHUB_GITHUB_API_BASE") || undefined;
-      if (app.releaseTagPattern) {
-        const picked = selectReleaseFromList(
-          app,
-          await fetchJson(releasesListApiUrl(app, apiBase), RELEASE_FETCH_TIMEOUT_MS)
-        );
-        release = picked ? parseAppRelease(app, variant, picked) : null;
-        if (!release) {
-          error = "最近 15 条 Release 中未找到匹配 " + app.releaseTagPattern + " 且包含 .apk 的版本";
-        }
-      } else {
-        release = parseAppRelease(app, variant, await fetchJson(releasesApiUrl(app, apiBase), RELEASE_FETCH_TIMEOUT_MS));
-        if (!release) error = "GitHub 发布页里没有找到 " + variant.assetName.replace("{version}", "*");
-      }
-    } catch (caught) {
-      error = "查询 " + app.name + " 最新版本失败: " + errorMessage(caught);
-    }
-    if (!release && app.id === "aerial" && variant.id === app.defaultVariant) {
-      // 兜底：官网直链，无法拿到版本号与校验和
-      release = {
-        appId: app.id,
-        variantId: variant.id,
-        packageName: variant.packageName,
-        tag: "latest",
-        version: "",
-        apkName: variant.assetName,
-        apkUrl: MIRROR_APK_URL,
-        sizeBytes: 0,
-        sha256: null,
-        publishedAt: null,
-        channel: "mirror"
-      };
-    }
-  }
-  releaseCache.set(key, { at: Date.now(), value: release, error });
-  return { release, error };
+  const resolved = await resolveTvAppRelease(app, variant, {
+    cacheDir,
+    force: options?.force,
+    ...options?.resolverOptions
+  });
+  const result = { release: resolved.release, error: resolved.error, mirrors: resolved.mirrors };
+  releaseCache.set(key, { at: Date.now(), value: result.release, error: result.error, mirrors: result.mirrors });
+  return result;
 }
 
 /** 旧导出：Aerial 标准版的最新发布信息。 */
 export async function fetchLatestRelease(options?: { force?: boolean }): Promise<{
   release: TvAppReleaseInfo | null;
   error: string | null;
+  mirrors: string[];
 }> {
   const app = aerialApp();
   return fetchAppRelease(app, defaultVariantOf(app), options);
@@ -466,16 +436,6 @@ export function sha256File(filePath: string): Promise<string> {
     stream.on("error", reject);
     stream.on("end", () => resolve(hash.digest("hex")));
   });
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  return host === "127.0.0.1" || host === "::1" || host === "localhost";
-}
-
-/** 仅供本地 E2E：显式开关 + 严格回环地址，生产 HTTPS 校验不受影响。 */
-function allowInsecureLoopback(): boolean {
-  return envValue("CASTHUB_ALLOW_INSECURE_LOOPBACK") === "1";
 }
 
 function isAllowedDownloadUrl(raw: string): boolean {
@@ -1049,7 +1009,7 @@ export class TvDesktopService {
       match = matchVariantForDevice(app, null, null);
     }
     const variant = match.variant;
-    const releaseResult = await fetchAppRelease(app, variant, { force: options?.force });
+    const releaseResult = await fetchAppRelease(app, variant, { force: options?.force, cacheDir: this.cacheDir });
     const info: TvDesktopInfo = {
       adb,
       release: releaseResult.release,
@@ -1215,7 +1175,8 @@ export class TvDesktopService {
           channel: "custom"
         };
       } else {
-        release = (await fetchAppRelease(app, variant)).release;
+        const fetched = await fetchAppRelease(app, variant, { cacheDir: this.cacheDir });
+        release = fetched.release;
       }
       if (!release) {
         return fail("无法获取 " + app.name + " 安装包地址", null);
@@ -1227,9 +1188,9 @@ export class TvDesktopService {
       let apkPath: string;
       try {
         const downloaded = await downloadApk(release, this.cacheDir, {
-            onProgress: options?.onProgress,
-            maxBytes: app.maxApkBytes
-          });
+          onProgress: options?.onProgress,
+          maxBytes: app.maxApkBytes
+        });
         apkPath = downloaded.filePath;
         steps.push({
           key: "download",

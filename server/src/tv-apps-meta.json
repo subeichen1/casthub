@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "mirrors": [],
+  "apps": [
+    {
+      "id": "aerial",
+      "repo": "pengchujin/aerial-tv"
+    },
+    {
+      "id": "hongguo",
+      "repo": "aston314/hongguo-tv-releases",
+      "releaseTagPattern": "^v\\d+\\.\\d+\\.\\d+"
+    },
+    {
+      "id": "tvbox",
+      "repo": "j4Uq/TVBoxOSC"
+    }
+  ]
+}
