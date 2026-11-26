@@ -31,6 +31,7 @@ CastHub 是一个开源的局域网投屏工具，由 **PC 中枢、浏览器控
 | **Windows 桌面端** | 免安装 portable 版，双击即用，可放 U 盘携带；支持同目录 `config.json`。 |
 | **Android TV 客户端** | Kotlin + Media3/ExoPlayer 原生播放，支持遥控器操作与 8 位安全配对码。 |
 | **局域网直连** | PC 与电视直接传输媒体流，不经过云端；支持 HTTP Range，进度拖动可靠。 |
+| **电视应用助手** | 通过 ADB 自动匹配电视 ABI/SDK，索引 GitHub Releases 并安装 Aerial / TVBox / 红果短剧 TV；支持镜像加速与 SHA-256 校验。 |
 | **零构建控制台** | 原生 HTML/CSS/JavaScript，无需前端构建工具，打开浏览器即可使用。 |
 
 ## 系统要求
@@ -176,15 +177,21 @@ PC 中枢基于 Node.js 22 + TypeScript + Fastify + ws，在 `9420` 端口同时
 ```text
 casthub/
 ├── server/                  # Node.js 中枢
-│   ├── src/index.ts         # 入口：读取 MEDIA_DIR / PUBLIC_BASE_URL / config.json
+│   ├── src/index.ts         # 入口：读取 config.json / 环境变量，组装 HTTP + WS 服务
 │   ├── src/files.ts         # /api/files 浏览 + /media 流（Range）
 │   ├── src/devices.ts       # 设备注册 + 中枢→电视 WS 客户端（指数退避重连）
 │   ├── src/dlna.ts          # DLNA 发现、SOAP 控制与状态轮询（降级模式）
 │   ├── src/history.ts       # 播放历史接口 + SQLite/JSON 存储
 │   ├── src/console-ws.ts    # 控制台 ↔ 中枢 WS
+│   ├── src/tv-apps.ts       # 第三方 TV 应用目录、变体匹配与设备属性解析
+│   ├── src/tv-desktop.ts    # APK 下载、ADB 探测与安装
+│   ├── src/tv-release-resolver.ts # GitHub Releases / 静态目录 / ETag 缓存解析
+│   ├── src/tv-apps-meta.json # TV 应用元数据（后端与目录构建脚本共用）
+│   ├── src/network-config.ts # 网络设置读取、校验与持久化
+│   ├── src/network-fetch.ts  # undici 代理 / 网络客户端
 │   ├── public/              # 控制台网页（原生 HTML/JS，无构建）
 │   ├── data/                # 播放历史数据库（运行时生成，已 gitignore）
-│   └── scripts/             # fake-tv / e2e / e2e-history / fake-dlna / e2e-dlna
+│   └── scripts/             # fake-tv / e2e / e2e-tv-* / build-tv-catalog / fake-dlna
 ├── tv-app/                  # Android TV App（Kotlin + Media3）
 │   └── app/src/main/java/io/casthub/tv/
 │       ├── MainActivity.kt  # 配对屏：本机 WS 地址 + 8 位配对码
@@ -193,7 +200,7 @@ casthub/
 │       └── Protocol.kt      # 消息数据类
 ├── scripts/                 # 安装与部署脚本
 ├── docs/                    # 截图与演示文件
-└── .github/workflows/       # GitHub Actions CI
+└── .github/workflows/       # GitHub Actions CI + TV 目录定时生成
 ```
 
 协议细节见 [PROTOCOL.md](PROTOCOL.md)。
@@ -212,6 +219,7 @@ casthub/
 | `CASTHUB_LOG_FILE` | 空（输出到终端） | 指定后写入带轮转的服务端日志文件。 |
 | `PORT` | `9420` | 中枢 HTTP/WebSocket 端口。 |
 | `DLNA_SEED` | 空 | 逗号分隔的 `device.xml` URL，用于跳过 SSDP 直接注入 DLNA 设备。 |
+| `network.*` | 空 | 网络设置：代理、GitHub 镜像、GitHub Token、静态目录地址；字段、环境变量与安全限制详见下文「网络设置（代理 / 镜像 / GitHub Token）」。 |
 
 桌面版可在 `CastHub.exe` 同目录放置 `config.json`：
 
@@ -374,15 +382,19 @@ npm start
 
 ![DLNA 设备列表](docs/dlna-ui-01-devices.png)
 
-## 电视助手（Aerial 桌面 / 红果短剧 TV / TVBox）
+## 第三方 TV 应用推荐与 ADB 安装
 
-电视助手把「下载 APK + adb 安装」做成控制台里的一键操作，目前支持三个应用：
+CastHub PC 中枢支持通过 ADB 自动探测电视的 Android 版本（`ro.build.version.sdk`）与芯片架构（`ro.product.cpu.abilist` / `abi`），自动匹配最合适的安装包并完成校验与推送安装。
 
-- **Aerial 极简桌面**（`app.orchard.tv`）：[Aerial](https://github.com/pengchujin/aerial-tv)（MIT）把 Android TV 的桌面换成 Apple TV 风格的极简桌面，会接管 Home 键，因此安装与还原都带桌面角色、无障碍守护等额外步骤。
-- **红果短剧 TV**（`rocks.aston.hongguotv`）：[红果短剧](https://github.com/aston314/hongguo-tv) 的 Android TV 客户端，来自只发布安装包的仓库 [aston314/hongguo-tv-releases](https://github.com/aston314/hongguo-tv-releases)。它是**普通应用**，装完出现在电视的应用列表里，不动默认桌面、不改 Home 键。
-- **TVBox（TVBoxOSC）**（`com.github.tvbox.osc.jun`）：[TVBoxOSC](https://github.com/j4Uq/TVBoxOSC) 是第三方影视聚合客户端的自动构建仓库，由 GitHub Actions 每天从上游 TVBoxOS 源码编译、用仓库自带证书签名后发布。同样是**普通应用**，装完在电视应用列表里打开；源地址需要在应用内自己配置。
+### 内置索引的第三方项目
 
-三者都是第三方项目。CastHub 只做「下载地址 + adb 命令模板」，**不内置也不分发 APK**，安装包始终从各自官方发布页获取。
+CastHub 仅索引以下项目的上游官方 GitHub Releases，**不在本仓库或 CastHub Releases 中托管、修改或二次打包任何第三方 APK**：
+
+| 应用名称 | 上游仓库 | 说明与定位 |
+| :--- | :--- | :--- |
+| **Aerial 极简桌面** | [`pengchujin/aerial-tv`](https://github.com/pengchujin/aerial-tv) | 开源 Android TV 极简启动器；查询失败时提供官方默认直链兜底。 |
+| **TVBox（TVBoxOSC）** | [`j4Uq/TVBoxOSC`](https://github.com/j4Uq/TVBoxOSC) | 社区维护的开源 TVBox 空壳构建库（含 `java` / `python` 及 32/64 位多变体），软件本身不含任何片源。 |
+| **红果短剧 TV** | [`aston314/hongguo-tv-releases`](https://github.com/aston314/hongguo-tv-releases) | 第三方独立大屏客户端发布库（含标准版、MPV 版与 Android 5 兼容版）；自动过滤非 Android 平台 Tag。 |
 
 ### 使用前提
 
@@ -447,9 +459,18 @@ TVBoxOSC 的发布页对每个上游分支提供多个 APK，CastHub 取其中�
 - 手动在下拉里指定了具体变体 → 不再探测系统属性（省一次 adb 往返），完全尊重手动选择；点安装时中枢会用同一个具体变体重跑一次匹配，避免前端状态过期装错包。
 - 红果 MPV 版自动优先级低于标准版，因此只有手动选才会装；它和标准版包名不同，可以共存。
 
+### 静态目录与版本解析机制
+
+为避免匿名访问 GitHub API 触发 60 次/小时的出口 IP 限流，并解决多平台混发仓库的 Tag 识别问题，CastHub 后端按以下优先级解析安装包信息：
+
+1. **离线 JSON 注入（调试 / 离线环境）**：优先读取环境变量 `AERIAL_RELEASE_JSON`、`HONGGUO_RELEASE_JSON`、`TVBOX_RELEASE_JSON`。
+2. **静态目录 `tv-catalog.json`（默认主路径，0 次 GitHub API 额度消耗）**：仓库通过 GitHub Actions（`.github/workflows/tv-catalog.yml`）每 4 小时自动抓取上游最新正式版并生成元数据清单，发布至独立分支 `catalog-data`。PC 后端本地磁盘缓存 30 分钟，过期后携带 `If-None-Match`（ETag）发起条件请求，上游无更新时返回 `304` 复用缓存；远端不可达时自动降级使用本地旧缓存。
+3. **直连 GitHub API 兜底**：静态目录不可用或目标应用缺失时自动回退至 `api.github.com`，同样启用 10 分钟磁盘缓存与 ETag `304`（不扣除限流配额）；遇到 `403/429` 限流时优先降级返回旧缓存，无缓存时提示重置时间。
+4. **应用级兜底**：Aerial 默认变体保留官方固定直链兜底。
+
 ### 版本与校验
 
-面板默认使用 GitHub Releases 的最新正式版，并显示版本号、体积与 SHA-256；发布页提供 `digest` 时下载后会强制校验，校验失败即中止且不会安装。Aerial 的资产名固定为 `aerial-standard.apk`；红果按变体匹配 `hongguo-tv-<版本>.apk`、`hongguo-tv-mpv-<版本>.apk`、`hongguo-tv-android5-<版本>.apk`；TVBox 按变体匹配 `TVBox_q215613905_<构建时间>-java.apk`、`-java32`、`-java64`、`-python`、`-python32`、`-python64`。Aerial 在 GitHub API 不可达时会回退官网镜像直链（此时无校验和，面板会标注「官网镜像」）；红果与 TVBox 没有镜像，查询失败时面板直接报错、不下载。
+面板显示版本号、体积与 SHA-256；上游 Release 提供 `digest` 或 `SHA256SUMS.txt` / `checksums.txt` 时，下载后会强制校验 SHA-256，校验失败即中止且不会安装。Aerial 的资产名固定为 `aerial-standard.apk`；红果按变体匹配 `hongguo-tv-<版本>.apk`、`hongguo-tv-mpv-<版本>.apk`、`hongguo-tv-android5-<版本>.apk`；TVBox 按变体匹配 `TVBox_q215613905_<构建时间>-java.apk`、`-java32`、`-java64`、`-python`、`-python32`、`-python64`。Aerial 在静态目录与 GitHub API 均不可达时会回退官方固定直链（此时无校验和，面板会标注「官网镜像」）；红果与 TVBox 查询失败时面板直接报错、不下载。
 
 需要装特定版本时，在「装指定版本 / 手动安装」里填 https 的 APK 直链；手动地址不会自动带校验和，面板会再确认一次。
 
@@ -459,16 +480,70 @@ TVBoxOSC 的发布页对每个上游分支提供多个 APK，CastHub 取其中�
 
 面板选中电视后会自动读取电视上已装的应用版本（`adb shell dumpsys package <包名>` 的 `versionName`），显示「电视上的 Aerial：v2.11」或「电视上的 红果短剧 TV：v0.2.182」；如果 GitHub 上的最新正式版更高，会额外提示「有新版本 vX，可重新一键安装升级」。比较用数字段逐段对比（`0.2.182`、`20261111-1518` 这类都能比），镜像渠道或版本号解析不出来时不提示更新，避免误报。红果三个变体分别查询各自的包名，装了两个变体时两条记录互不干扰；TVBox 六个变体共用一个包名，读到的就是当前装着的那一个。
 
-CastHub **不会自动升级**已装的应用：确认要升级时再点一次安装按钮即可（内部是 `adb install -r`，保留数据）。发布信息默认缓存 10 分钟，点面板上的「刷新」会绕过缓存重新查询 GitHub Releases，同时重新读取已装版本。
+CastHub **不会自动升级**已装的应用：确认要升级时再点一次安装按钮即可（内部是 `adb install -r`，保留数据）。静态目录默认缓存 30 分钟、直连 GitHub API 缓存 10 分钟；点面板上的「刷新」会绕过缓存重新查询发布信息，同时重新读取已装版本。
 
 调试或多网环境可以用环境变量注入发布信息，跳过 GitHub 查询：`AERIAL_RELEASE_JSON`（Aerial）、`HONGGUO_RELEASE_JSON`（红果）与 `TVBOX_RELEASE_JSON`（TVBox）指向一个本地 JSON 文件（允许带 UTF-8 BOM），内容形如 `{"tag":"0.2.182","apkName":"hongguo-tv-0.2.182.apk","apkUrl":"https://…/hongguo-tv-0.2.182.apk","sizeBytes":30608185,"sha256":"…","publishedAt":"…","variant":"standard"}`；红果与 TVBox 可带 `variant` 字段限定只对该变体生效（缺省 `apkUrl` 或变体不匹配时报错，不会套用别的变体的安装包）。
 
 ### 风险提示
 
-
 Aerial 会接管电视的默认桌面与 Home 键，属于对电视系统的修改。请在确认可以还原后再安装；还原依赖 adb 仍然可用，如果安装后又关闭了电视的 ADB 调试，就只能用官方脚本或电视恢复出厂设置。CastHub 不对第三方桌面的稳定性负责。
 
 红果短剧 TV 与 TVBox 不修改桌面，但都是第三方内容应用：内容版权、账号、会员与隐私政策均由该应用与其服务方决定，CastHub 只负责把它装上，不参与内容分发也不对其内容负责。TVBoxOSC 本身不附带任何源地址，装完需要在应用里自行配置，源地址的可用性与合法性由使用者判断。安装包来自第三方 GitHub 发布页，面板会校验发布页给出的 SHA-256；手动填写的直链没有校验和，请自行确认来源。
+
+下载链路的安全边界（SHA-256 强校验、镜像域名限制、GitHub Token 凭据隔离与安全 Range 续传）详见下方 [下载安全与容错边界](#下载安全与容错边界)，并与 [SECURITY.md](SECURITY.md) 的资产与信任边界统一。
+
+---
+
+## 网络设置（代理 / 镜像 / GitHub Token）
+
+国内网络环境下如遇静态目录拉取慢、APK 下载断流或直连 API 限流，可通过 **Web 控制台 → 网络设置**（复用现有 `/console` 令牌鉴权，保存后立即热生效并自动清理旧缓存，无需重启）、`config.json` 或环境变量进行配置。
+
+优先级为：**环境变量 > `config.json` > 默认直连**。
+
+### 配置项与环境变量对照
+
+| `config.json` 字段 | 环境变量 | 用途说明 | 校验与限制 |
+| :--- | :--- | :--- | :--- |
+| `network.proxy` | `CASTHUB_PROXY`（未设置时回退 `HTTPS_PROXY` / `HTTP_PROXY`，并尊重 `NO_PROXY`） | 为目录拉取、GitHub API 与 APK 下载配置代理（如 `http://127.0.0.1:7890`）。 | 仅允许 `http://` 或 `https://`，拒绝内嵌用户名密码的代理 URL。 |
+| `network.githubMirror` | `CASTHUB_GITHUB_MIRROR` | 自定义 GitHub 加速镜像前缀（如 `https://mirror.example.com`）。 | 必须为 `https://`，禁止私网/局域网/回环地址（防 SSRF）。 |
+| `network.githubToken` | `CASTHUB_GITHUB_TOKEN` | 可选的 GitHub Personal Access Token（无需额外权限），直连回退 API 时将限额由 60 次/小时提升至 5,000 次/小时。 | 仅保存在服务端本地，绝不写入日志或向前端回传明文。 |
+| `network.catalogUrl` | `CASTHUB_CATALOG_URL` | 自定义静态目录 `tv-catalog.json` 地址（默认指向本仓库 `catalog-data` 分支）。 | 必须为 `https://`，禁止私网/局域网/回环地址。 |
+
+`config.json` 示例（`network` 为可选字段，全留空即零配置直连）：
+
+```json
+{
+  "desktop": {
+    "autoStart": false,
+    "updateRepo": "subeichen1/casthub"
+  },
+  "network": {
+    "proxy": "",
+    "githubMirror": "",
+    "githubToken": "",
+    "catalogUrl": ""
+  }
+}
+```
+
+### 下载安全与容错边界
+
+* **SHA-256 强校验红线**：第三方加速镜像**仅在目标 APK 具备上游合法 64 位 SHA-256 哈希时启用**；若上游未提供校验值，CastHub 会自动跳过所有镜像，仅从官方原始地址下载。
+* **多源自动回退**：下载按 `用户自定义镜像 → 目录镜像池 → GitHub 原始直链` 顺序尝试。若镜像返回非 `200/206`、返回 `text/html` / `application/json` 拦截页、连接超时或落盘后 SHA-256 校验失败，会自动清理临时 `.part` 文件并无缝切换至下一候选源。
+* **域名与凭据严格隔离**：
+  * 镜像前缀仅对 `github.com`、`raw.githubusercontent.com`、`objects.githubusercontent.com` 生效，绝不包裹独立官方域名。
+  * `Authorization: Bearer <githubToken>` 请求头仅在访问 `api.github.com` 时附加，绝不发送给任何镜像站或文件下载节点。
+  * Web 控制台仅显示 Token 是否已配置，留空保存不会覆盖现有 Token，支持显式一键清除。
+* **可靠传输保护**：支持同源安全 `Range` 断点续传（切换镜像源时自动清空旧分片，严禁跨源拼接）、同文件并发下载去重，以及默认 200 MiB 的单包体积上限保护。
+
+---
+
+## 第三方应用来源声明与免责说明
+
+1. **项目独立性与来源归属**：CastHub 本身是局域网投屏与 Android TV 设备管理工具。内置的第三方 TV 应用推荐功能仅作为上游公开 GitHub Releases 的索引与 ADB 安装辅助，**不托管、不修改、不二次分发任何第三方二进制安装包**。所列第三方应用的名称、图标、源代码及相关知识产权均归各自原作者或版权方所有，CastHub 与其不存在任何官方合作、授权或隶属关系。
+2. **仅限纯工具与空壳播放器**：CastHub 不内置、不收集、不提供也不推荐任何影视点播接口、IPTV 直播源或受版权保护的音视频内容。开源播放器（如 TVBoxOSC）安装后均为不含片源的空壳软件。
+3. **合规使用与风险自担**：第三方客户端的持续可用性、数据隐私行为及服务条款合规性由其各自上游项目独立承担。用户在使用 CastHub 安装及运行任何第三方应用前，应自行评估软件来源并严格遵守所在国家/地区的法律法规及相关平台服务协议，因安装或使用第三方软件产生的一切风险与责任均由用户自行承担。
+4. **权利人通知与下架**：若任何第三方项目作者或权利人认为本项目的索引条目涉及不当引用或侵犯合法权益，请通过 GitHub Issues 或仓库安全联系方式告知，我们将在核实后第一时间移除对应索引。
 
 ## 开发与测试
 
@@ -484,6 +559,9 @@ node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subti
 node --import tsx scripts/e2e-embedded-subtitles.mjs # 内嵌字幕三模式 + 缓存路由 + DLNA DIDL
 npm run e2e-queue   # DLNA 播放队列 + 自动连播 + 停止/清空
 npm run e2e-tv-desktop # 电视助手：fake adb 覆盖 Aerial 安装/未授权/厂商拒绝/还原 + 红果三变体安装与共存 + TVBox 六变体（共享包名）+ 按系统属性自动匹配变体
+npm run e2e-tv-release # TV release 解析：Tag 过滤 / 自动匹配 / 大小上限
+npm run e2e-tv-catalog # 静态目录构建：digest / checksums / 旧数据保留
+npm run e2e-tv-network # 网络设置 / 代理 / 镜像回退 / SHA-256 / Range 续传 / 并发合并
 npm run e2e-security # 安全边界与历史存储恢复
 npm run test:updater # 桌面自动更新器单元测试
 ```
@@ -503,7 +581,7 @@ curl -H "x-casthub-token: $TOKEN" http://127.0.0.1:9420/api/files
 curl -H "x-casthub-token: $TOKEN" -r 0-1023 http://127.0.0.1:9420/media/test.mp4
 ```
 
-CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和八条 e2e（App 投屏、DLNA、播放历史、字幕、内嵌字幕、播放队列、电视助手、安全），并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
+CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执行 `npm ci`、类型检查、构建、生产与开发依赖审计（`npm audit --audit-level=high`）和十一条 e2e（App 投屏、DLNA、播放历史、字幕、内嵌字幕、播放队列、电视助手、TV release、TV catalog、TV network、安全），并构建 Android debug APK；发布由 `.github/workflows/release.yml` 使用签名材料产出带 `checksums.txt` 的 Release。
 
 ## 常见问题
 
@@ -518,7 +596,7 @@ CI 使用 GitHub Actions（`.github/workflows/ci.yml`），在 Node.js 22 下执
 - 无转码、无多用户；设备列表与当前播放状态存内存，中枢重启后设备列表清空；播放历史持久化在本地 `data/`（SQLite，安装失败时 JSON 降级）。
 - 主线不做 SSDP/mDNS/二维码/屏幕镜像，配对靠手输地址 + 8 位码；DLNA 兼容模式作为降级路径。
 - DTS 等电视不支持的音轨只能换片源，本项目不转码。
-- 本项目面向家庭局域网，不建议直接暴露到公网。控制面使用控制台令牌鉴权，媒体流使用 HMAC 签名 URL；信任边界与安全验收要求见 [SECURITY.md](SECURITY.md)。
+- 本项目面向家庭局域网，不建议直接暴露到公网。控制面使用控制台令牌鉴权，媒体流使用 HMAC 签名 URL；信任边界与安全验收要求见 [SECURITY.md](SECURITY.md)。第三方 TV 应用下载的 SHA-256 强校验、镜像域名限制与 GitHub Token 凭据隔离统一见 [下载安全与容错边界](#下载安全与容错边界)。
 
 ## 文档
 
