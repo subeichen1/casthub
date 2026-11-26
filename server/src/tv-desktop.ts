@@ -383,7 +383,9 @@ export async function fetchAppRelease(
   let error: string | null = null;
   if (customPath) {
     try {
-      release = parseAppCustomRelease(app, variant, JSON.parse(fs.readFileSync(customPath, "utf8")));
+      // Windows 记事本 / PowerShell 5 写出的 JSON 常带 UTF-8 BOM，JSON.parse 会直接报错，这里先剥掉。
+      const customText = fs.readFileSync(customPath, "utf8").replace(/^\uFEFF/, "");
+      release = parseAppCustomRelease(app, variant, JSON.parse(customText));
       if (!release) error = releaseJsonEnvName(app) + " 缺少 apkUrl（或 variant 不匹配）";
     } catch (caught) {
       error = "读取 " + releaseJsonEnvName(app) + " 失败: " + errorMessage(caught);

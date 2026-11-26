@@ -103,6 +103,7 @@
     tvDesktopVariantRow: document.getElementById("tvDesktopVariantRow"),
     tvDesktopVariant: document.getElementById("tvDesktopVariant"),
     tvDesktopAppNotice: document.getElementById("tvDesktopAppNotice"),
+    tvDesktopFooterHint: document.getElementById("tvDesktopFooterHint"),
     tvDesktopDevice: document.getElementById("tvDesktopDevice"),
     tvDesktopMeta: document.getElementById("tvDesktopMeta"),
     tvDesktopInstallBtn: document.getElementById("tvDesktopInstallBtn"),
@@ -1175,6 +1176,12 @@
       } else {
         els.tvDesktopAppNotice.textContent = "";
         els.tvDesktopAppNotice.hidden = true;
+      }
+      if (els.tvDesktopFooterHint) {
+        els.tvDesktopFooterHint.textContent =
+          active.installKind === "launcher"
+            ? "安装包不随 CastHub 分发，安装时从 GitHub 官方发布页（或官网镜像）下载；提供 SHA-256 时强制校验，未提供时会在开始前要求确认来源可信。adb 缺失时可点下方按钮查看下载地址。还原只做通用步骤，品牌定制项请用官方脚本。"
+            : "安装包不随 CastHub 分发，安装时从 GitHub 官方发布页下载；提供 SHA-256 时强制校验，未提供时会在开始前要求确认来源可信。adb 缺失时可点下方按钮查看下载地址。普通应用只做卸载，不涉及桌面还原。";
       }
     }
 
