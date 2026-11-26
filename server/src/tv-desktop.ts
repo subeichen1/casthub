@@ -22,6 +22,9 @@ import {
   variantSummary
 } from "./tv-apps";
 import { resolveTvAppRelease, type TvReleaseResolverOptions } from "./tv-release-resolver";
+import { fetch as undiciFetch } from "undici";
+import type { NetworkSettingsService } from "./network-config";
+import type { NetworkClient } from "./network-fetch";
 
 /** 兼容旧调用方：Aerial 发布信息的结构就是通用发布信息。 */
 export type AerialReleaseInfo = TvAppReleaseInfo;
@@ -460,6 +463,12 @@ export interface DownloadApkOptions {
   onProgress?: DownloadProgress;
   /** 覆盖默认 200 MiB 上限（字节）。 */
   maxBytes?: number;
+  /** 用户配置的 GitHub 加速镜像前缀（仅 GitHub 域名可用）。 */
+  githubMirror?: string;
+  /** 静态目录下发的镜像前缀列表（仅 release 有可信 SHA-256 时启用）。 */
+  mirrors?: readonly string[];
+  /** 统一由 NetworkClient 提供的 undici fetch；测试可注入。 */
+  fetcher?: typeof fetch;
 }
 
 function normalizeDownloadOptions(input?: DownloadProgress | DownloadApkOptions): DownloadApkOptions {
@@ -469,6 +478,277 @@ function normalizeDownloadOptions(input?: DownloadProgress | DownloadApkOptions)
 function resolveMaxBytes(value: number | undefined): number {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
   return MAX_APK_BYTES;
+}
+
+function normalizeSha256(value: string | null | undefined): string | null {
+  const text = (value ?? "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(text) ? text : null;
+}
+
+const GITHUB_DOWNLOAD_HOSTS = new Set(["github.com", "raw.githubusercontent.com", "objects.githubusercontent.com"]);
+const inFlightDownloads = new Map<string, Promise<{ filePath: string; sha256: string; cached: boolean }>>();
+const DOWNLOAD_HEADER_TIMEOUT_MS = 15_000;
+const DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
+
+function positiveTimeoutEnv(name: string, fallback: number): number {
+  const raw = envValue(name);
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function downloadHeaderTimeoutMs(): number {
+  return positiveTimeoutEnv("CASTHUB_DOWNLOAD_HEADER_TIMEOUT_MS", DOWNLOAD_HEADER_TIMEOUT_MS);
+}
+
+function downloadIdleTimeoutMs(): number {
+  return positiveTimeoutEnv("CASTHUB_DOWNLOAD_IDLE_TIMEOUT_MS", DOWNLOAD_IDLE_TIMEOUT_MS);
+}
+
+function buildMirrorUrl(prefix: string, originalUrl: string): string | null {
+  const trimmed = prefix.trim().replace(/\/+$/, "");
+  if (!trimmed) return null;
+  try {
+    const mirror = new URL(trimmed);
+    if (mirror.protocol !== "https:" && !(mirror.protocol === "http:" && allowInsecureLoopback() && isLoopbackHostname(mirror.hostname))) {
+      return null;
+    }
+    if (mirror.username || mirror.password) return null;
+    const original = new URL(originalUrl);
+    if (!GITHUB_DOWNLOAD_HOSTS.has(original.hostname.toLowerCase())) return null;
+    return trimmed + "/" + originalUrl;
+  } catch {
+    return null;
+  }
+}
+
+function downloadCandidates(release: TvAppReleaseInfo, options: DownloadApkOptions): string[] {
+  const result: string[] = [];
+  const add = (value: string | null): void => {
+    if (!value) return;
+    if (!result.includes(value)) result.push(value);
+  };
+  // 只有可信 SHA-256 才允许第三方镜像；否则必须直连原始地址，避免来源不可验证。
+  if (normalizeSha256(release.sha256)) {
+    add(buildMirrorUrl(options.githubMirror ?? "", release.apkUrl));
+    for (const mirror of options.mirrors ?? []) add(buildMirrorUrl(mirror, release.apkUrl));
+  }
+  add(release.apkUrl);
+  return result;
+}
+
+interface PartialMeta {
+  url: string;
+  sha256: string;
+  bytes: number;
+}
+
+async function readPartialMeta(metaPath: string): Promise<PartialMeta | null> {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(metaPath, "utf8")) as Partial<PartialMeta>;
+    if (typeof value.url !== "string" || typeof value.sha256 !== "string" || typeof value.bytes !== "number") return null;
+    return { url: value.url, sha256: value.sha256, bytes: value.bytes };
+  } catch {
+    return null;
+  }
+}
+
+async function writePartialMeta(metaPath: string, meta: PartialMeta): Promise<void> {
+  const temp = metaPath + ".tmp";
+  await fs.promises.writeFile(temp, JSON.stringify(meta), "utf8");
+  await fs.promises.rename(temp, metaPath);
+}
+
+async function removePartial(partial: string, metaPath: string): Promise<void> {
+  await Promise.all([
+    fs.promises.rm(partial, { force: true }).catch(() => undefined),
+    fs.promises.rm(metaPath, { force: true }).catch(() => undefined)
+  ]);
+}
+
+function isRejectedContentType(value: string | null): boolean {
+  const mime = (value ?? "").split(";")[0].trim().toLowerCase();
+  return mime === "text/html" || mime === "application/json" || mime === "text/plain";
+}
+
+function parseContentRange(value: string | null): { start: number; end: number; total: number } | null {
+  if (!value) return null;
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value.trim());
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = Number(match[3]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || !Number.isSafeInteger(total)) return null;
+  if (start < 0 || end < start || total <= end) return null;
+  return { start, end, total };
+}
+
+/** 下载单个候选地址；Range 只允许在同一 URL、同一期望摘要且已有 .part 时使用。 */
+async function downloadHttpCandidate(
+  url: string,
+  partial: string,
+  metaPath: string,
+  expectedSha: string,
+  maxBytes: number,
+  options: DownloadApkOptions
+): Promise<void> {
+  const meta = await readPartialMeta(metaPath);
+  let offset = 0;
+  if (meta && meta.url === url && meta.sha256 === expectedSha) {
+    const size = await fs.promises.stat(partial).then((stat) => stat.size).catch(() => 0);
+    if (size > 0 && size < maxBytes) offset = size;
+  }
+  if (offset === 0) await removePartial(partial, metaPath);
+  else await writePartialMeta(metaPath, { url, sha256: expectedSha, bytes: offset });
+
+  const controller = new AbortController();
+  let headerTimedOut = false;
+  let idleTimedOut = false;
+  const headerTimer = setTimeout(() => {
+    headerTimedOut = true;
+    controller.abort();
+  }, downloadHeaderTimeoutMs());
+  let response: Response;
+  try {
+    response = await (options.fetcher ?? (undiciFetch as typeof fetch))(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      ...(offset > 0 ? { headers: { Range: "bytes=" + offset + "-" } } : {})
+    });
+  } catch (error) {
+    clearTimeout(headerTimer);
+    if (headerTimedOut) throw new Error("下载 APK 超时（响应头超过 " + Math.round(downloadHeaderTimeoutMs() / 1000) + " 秒）");
+    throw new Error("请求失败: " + errorMessage(error));
+  }
+  clearTimeout(headerTimer);
+
+  if (response.url && !isAllowedDownloadUrl(response.url)) {
+    controller.abort();
+    throw new Error("下载 APK 时重定向到了非 HTTPS 地址");
+  }
+  if (response.status !== 200 && response.status !== 206) {
+    controller.abort();
+    throw new Error("下载 APK 失败: HTTP " + response.status);
+  }
+  if (isRejectedContentType(response.headers.get("content-type"))) {
+    controller.abort();
+    throw new Error("下载地址返回了非 APK 内容（" + response.headers.get("content-type") + "）");
+  }
+
+  let append = false;
+  let total = 0;
+  if (response.status === 206) {
+    const range = parseContentRange(response.headers.get("content-range"));
+    if (!range || range.start !== offset || range.total > maxBytes) {
+      controller.abort();
+      await removePartial(partial, metaPath);
+      if (offset > 0) {
+        // 不合规的 206 不能拿旧字节拼接，从 0 重新请求同一候选。
+        return downloadHttpCandidate(url, partial, metaPath, expectedSha, maxBytes, options);
+      }
+      throw new Error("下载 APK 失败: 206 响应的 Content-Range 不合规");
+    }
+    append = offset > 0;
+    total = range.total;
+  } else {
+    // 服务器忽略 Range 返回 200：必须从 0 覆盖写入，绝不能追加到旧 .part。
+    if (offset > 0) await removePartial(partial, metaPath);
+    const lengthHeader = response.headers.get("content-length");
+    total = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : 0;
+    if (total > maxBytes) {
+      controller.abort();
+      throw new Error("APK 体积异常: " + total + " 字节，超过上限 " + maxBytes + " 字节");
+    }
+  }
+  if (!response.body) {
+    controller.abort();
+    throw new Error("下载 APK 失败: 响应为空");
+  }
+
+  let idleTimer: NodeJS.Timeout | null = null;
+  const resetIdle = (): void => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimedOut = true;
+      controller.abort();
+    }, downloadIdleTimeoutMs());
+  };
+  resetIdle();
+  const handle = await fs.promises.open(partial, append ? "a" : "w");
+  let received = append ? offset : 0;
+  try {
+    for await (const chunk of response.body) {
+      resetIdle();
+      const buffer = Buffer.from(chunk);
+      received += buffer.length;
+      if (received > maxBytes) {
+        throw new Error("APK 体积异常，已中止下载：超过上限 " + maxBytes + " 字节");
+      }
+      await handle.write(buffer);
+      if (options.onProgress && total > 0) {
+        options.onProgress(Math.min(100, Math.round((received / total) * 100)));
+      }
+    }
+  } catch (error) {
+    if (idleTimedOut) throw new Error("下载 APK 超时（数据流空闲超过 " + Math.round(downloadIdleTimeoutMs() / 1000) + " 秒）");
+    throw error;
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    await handle.close().catch(() => undefined);
+  }
+  await writePartialMeta(metaPath, { url, sha256: expectedSha, bytes: received });
+}
+
+async function downloadToPath(
+  release: TvAppReleaseInfo,
+  target: string,
+  partial: string,
+  metaPath: string,
+  options: DownloadApkOptions
+): Promise<{ filePath: string; sha256: string; cached: boolean }> {
+  const maxBytes = resolveMaxBytes(options.maxBytes);
+  const expectedSha = normalizeSha256(release.sha256);
+  const candidates = downloadCandidates(release, options);
+  const failures: string[] = [];
+  for (const candidate of candidates) {
+    const maxAttempts = candidate.startsWith("file:") ? 1 : 2;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        if (candidate.startsWith("file:")) {
+          await removePartial(partial, metaPath);
+          const source = new URL(candidate);
+          const stat = await fs.promises.stat(source);
+          if (stat.size > maxBytes) {
+            throw new Error("APK 体积异常: " + stat.size + " 字节，超过上限 " + maxBytes + " 字节");
+          }
+          await fs.promises.copyFile(source, partial);
+        } else {
+          await downloadHttpCandidate(candidate, partial, metaPath, expectedSha ?? "", maxBytes, options);
+        }
+        const actual = await sha256File(partial);
+        if (expectedSha && actual !== expectedSha) {
+          await removePartial(partial, metaPath);
+          throw new Error("APK 校验失败：期望 " + expectedSha.slice(0, 12) + "… 实际 " + actual.slice(0, 12) + "…");
+        }
+        await fs.promises.rename(partial, target);
+        await fs.promises.rm(metaPath, { force: true }).catch(() => undefined);
+        return { filePath: target, sha256: actual, cached: false };
+      } catch (error) {
+        // 同一来源的传输中断允许再试一次；第二次请求会按 .part 大小续传。
+        const partialSize = await fs.promises.stat(partial).then((stat) => stat.size).catch(() => 0);
+        const canResume = !candidate.startsWith("file:") && partialSize > 0 && partialSize < maxBytes;
+        const isChecksumFailure = errorMessage(error).includes("校验失败");
+        if (attempt + 1 < maxAttempts && canResume && !isChecksumFailure) {
+          await writePartialMeta(metaPath, { url: candidate, sha256: expectedSha ?? "", bytes: partialSize }).catch(() => undefined);
+          continue;
+        }
+        failures.push((candidates.length > 1 ? candidate + "：" : "") + errorMessage(error));
+        await removePartial(partial, metaPath);
+        break;
+      }
+    }
+  }
+  throw new Error("下载 APK 失败（已尝试 " + candidates.length + " 个来源）：" + failures.join("；"));
 }
 
 /** 下载 APK 到缓存目录；已存在且校验通过则直接复用。返回本地路径与实际 sha256。 */
@@ -488,9 +768,10 @@ export async function downloadApk(
   const target = path.join(cacheDir, prefix + "-" + safeTag + "-" + urlKey + ".apk");
 
   if (fs.existsSync(target)) {
-    if (release.sha256) {
+    const expected = normalizeSha256(release.sha256);
+    if (expected) {
       const existing = await sha256File(target);
-      if (existing === release.sha256) {
+      if (existing === expected) {
         return { filePath: target, sha256: existing, cached: true };
       }
     }
@@ -498,47 +779,15 @@ export async function downloadApk(
     await fs.promises.rm(target, { force: true });
   }
 
+  const existingTask = inFlightDownloads.get(target);
+  if (existingTask) return existingTask;
   const partial = target + ".part";
-  await fs.promises.rm(partial, { force: true });
-
-  if (release.apkUrl.startsWith("file:")) {
-    await fs.promises.copyFile(new URL(release.apkUrl), partial);
-  } else {
-    const response = await fetch(release.apkUrl, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
-    });
-    if (response.url && !isAllowedDownloadUrl(response.url)) {
-      throw new Error("下载 APK 时重定向到了非 HTTPS 地址");
-    }
-    if (!response.ok) throw new Error("下载 APK 失败: HTTP " + response.status);
-    if (!response.body) throw new Error("下载 APK 失败: 响应为空");
-    const total = Number(response.headers.get("content-length") ?? 0);
-    if (total > maxBytes) throw new Error("APK 体积异常: " + total + " 字节，超过上限 " + maxBytes + " 字节");
-    const handle = await fs.promises.open(partial, "w");
-    let received = 0;
-    try {
-      for await (const chunk of response.body) {
-        const buffer = Buffer.from(chunk);
-        received += buffer.length;
-        if (received > maxBytes) throw new Error("APK 体积异常，已中止下载：超过上限 " + maxBytes + " 字节");
-        await handle.write(buffer);
-        if (options.onProgress && total > 0) {
-          options.onProgress(Math.min(100, Math.round((received / total) * 100)));
-        }
-      }
-    } finally {
-      await handle.close();
-    }
-  }
-
-  const actual = await sha256File(partial);
-  if (release.sha256 && actual !== release.sha256) {
-    await fs.promises.rm(partial, { force: true });
-    throw new Error("APK 校验失败：期望 " + release.sha256.slice(0, 12) + "… 实际 " + actual.slice(0, 12) + "…");
-  }
-  await fs.promises.rename(partial, target);
-  return { filePath: target, sha256: actual, cached: false };
+  const metaPath = partial + ".meta.json";
+  const task = downloadToPath(release, target, partial, metaPath, { ...options, maxBytes }).finally(() => {
+    inFlightDownloads.delete(target);
+  });
+  inFlightDownloads.set(target, task);
+  return task;
 }
 
 /** 从设备地址里取电视 IP（casthub 是 ws://ip:9417，DLNA 是 http://ip:port/desc.xml）。 */
@@ -964,15 +1213,51 @@ export function resolveTvAppSelection(
 export interface TvDesktopServiceOptions {
   /** APK 下载缓存目录（data/cache/tv-desktop）。 */
   cacheDir: string;
+  /** 网络设置服务；缺省时仅使用环境变量/内置默认。 */
+  networkSettings?: NetworkSettingsService;
+  /** 统一代理 fetch；缺省时使用 undici 直连。 */
+  networkClient?: NetworkClient;
 }
 
 /** 电视助手服务：同一时间只允许一个安装/还原任务。 */
 export class TvDesktopService {
   private readonly cacheDir: string;
+  private readonly networkSettings: NetworkSettingsService | undefined;
+  private readonly networkClient: NetworkClient | undefined;
   private running: string | null = null;
 
   constructor(options: TvDesktopServiceOptions) {
     this.cacheDir = options.cacheDir;
+    this.networkSettings = options.networkSettings;
+    this.networkClient = options.networkClient;
+  }
+
+  /**
+   * 网络设置保存后立即失效发布信息内存缓存与 resolver 磁盘缓存；
+   * 下一次面板刷新/安装会使用新的代理、镜像、Token 和目录地址重新解析。
+   */
+  invalidateNetworkCaches(): void {
+    clearReleaseCache();
+    for (const name of ["catalog-cache.json", "api-release-cache.json"]) {
+      try {
+        fs.rmSync(path.join(this.cacheDir, name), { force: true });
+      } catch {
+        // 缓存清理失败只影响热更新时机，不阻断设置保存；下次 TTL 到期仍会刷新。
+      }
+    }
+  }
+
+  /** 发布信息拉取选项：把网络配置与代理 fetch 传给 resolver。 */
+  private releaseOptions(): FetchAppReleaseOptions {
+    const network = this.networkSettings?.config;
+    const resolverOptions: NonNullable<FetchAppReleaseOptions["resolverOptions"]> = {};
+    if (network?.githubMirror) resolverOptions.githubMirror = network.githubMirror;
+    if (network?.githubToken) resolverOptions.githubToken = network.githubToken;
+    if (network?.catalogUrl) resolverOptions.catalogUrl = network.catalogUrl;
+    if (this.networkClient) {
+      resolverOptions.fetcher = this.networkClient.fetch as typeof fetch;
+    }
+    return { cacheDir: this.cacheDir, resolverOptions };
   }
 
   get busy(): boolean {
@@ -1009,7 +1294,7 @@ export class TvDesktopService {
       match = matchVariantForDevice(app, null, null);
     }
     const variant = match.variant;
-    const releaseResult = await fetchAppRelease(app, variant, { force: options?.force, cacheDir: this.cacheDir });
+    const releaseResult = await fetchAppRelease(app, variant, { force: options?.force, ...this.releaseOptions() });
     const info: TvDesktopInfo = {
       adb,
       release: releaseResult.release,
@@ -1160,6 +1445,7 @@ export class TvDesktopService {
       }
 
       let release: TvAppReleaseInfo | null;
+      let mirrors: string[] = [];
       if (customUrl) {
         release = {
           appId: app.id,
@@ -1175,8 +1461,9 @@ export class TvDesktopService {
           channel: "custom"
         };
       } else {
-        const fetched = await fetchAppRelease(app, variant, { cacheDir: this.cacheDir });
+        const fetched = await fetchAppRelease(app, variant, this.releaseOptions());
         release = fetched.release;
+        mirrors = fetched.mirrors;
       }
       if (!release) {
         return fail("无法获取 " + app.name + " 安装包地址", null);
@@ -1189,7 +1476,10 @@ export class TvDesktopService {
       try {
         const downloaded = await downloadApk(release, this.cacheDir, {
           onProgress: options?.onProgress,
-          maxBytes: app.maxApkBytes
+          maxBytes: app.maxApkBytes,
+          githubMirror: this.networkSettings?.config.githubMirror ?? "",
+          mirrors,
+          ...(this.networkClient ? { fetcher: this.networkClient.fetch as typeof fetch } : {})
         });
         apkPath = downloaded.filePath;
         steps.push({

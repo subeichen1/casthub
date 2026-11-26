@@ -2,6 +2,8 @@
 // 磁盘缓存使用临时文件 + rename 原子写入，目录缓存带 ETag/304，API 缓存带限流降级。
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fetch as undiciFetch } from "undici";
+import { assertRemoteNetworkUrl } from "./network-config";
 import {
   type TvAppDefinition,
   type TvAppReleaseInfo,
@@ -90,7 +92,7 @@ function catalogMirrorsOf(payload: Record<string, unknown>): string[] {
   for (const item of payload.mirrors) {
     if (typeof item !== "string" || !item.trim()) continue;
     try {
-      assertAllowedUrl(item.trim());
+      assertRemoteNetworkUrl(item.trim(), "目录 mirrors", { mirrorPrefix: true });
       result.push(item.trim().replace(/\/+$/, ""));
     } catch {
       // 忽略目录中非法的镜像前缀，不能让它把下载指向 file:// 或内网。
@@ -101,20 +103,20 @@ function catalogMirrorsOf(payload: Record<string, unknown>): string[] {
 
 function resolveApiBase(option?: string): string {
   const configured = (option ?? envValue("CASTHUB_GITHUB_API_BASE") ?? "").trim() || "https://api.github.com";
-  assertAllowedUrl(configured);
+  assertRemoteNetworkUrl(configured, "GITHUB_API_BASE");
   return configured.replace(/\/+$/, "");
 }
 
 function resolveCatalogUrl(option?: string): string {
   const configured = (option ?? envValue("CASTHUB_CATALOG_URL") ?? "").trim() || DEFAULT_CATALOG_URL;
-  assertAllowedUrl(configured);
+  assertRemoteNetworkUrl(configured, "CATALOG_URL");
   return configured;
 }
 
 function resolveMirror(option?: string): string {
   const mirror = (option ?? envValue("CASTHUB_GITHUB_MIRROR") ?? "").trim();
   if (!mirror) return "";
-  assertAllowedUrl(mirror);
+  assertRemoteNetworkUrl(mirror, "GITHUB_MIRROR", { mirrorPrefix: true });
   return mirror.replace(/\/+$/, "");
 }
 
@@ -135,7 +137,7 @@ async function fetchRaw(
   headers: Record<string, string>
 ): Promise<Response> {
   assertAllowedUrl(url);
-  const fetcher = options.fetcher ?? fetch;
+  const fetcher = options.fetcher ?? (undiciFetch as typeof fetch);
   const response = await fetcher(url, {
     headers,
     redirect: "follow",

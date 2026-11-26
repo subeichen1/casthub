@@ -23,6 +23,7 @@ import {
 import { findSubtitleCandidates, selectSubtitle } from "./subtitles";
 import { PlayQueue } from "./play-queue";
 import type { TvDesktopService } from "./tv-desktop";
+import type { NetworkSettingsService } from "./network-config";
 import { type HistoryRecorder, validResumePosition } from "./history";
 import { MEDIA_URL_TTL_MS, safeTokenEquals, signMediaPath } from "./security";
 import type { TvStatusPayload } from "./types";
@@ -53,6 +54,8 @@ export interface ConsoleWsOptions {
   embeddedCacheDir: string;
   /** 电视助手（Aerial 一键安装/还原）；缺省时不提供该功能。 */
   tvDesktop?: TvDesktopService;
+  /** 网络设置（代理/GitHub 镜像/Token/目录地址）；缺省时不提供该功能。 */
+  networkSettings?: NetworkSettingsService;
 }
 
 function resolveSubtitleMode(msg: ConsolePayload): SubtitleMode | null {
@@ -448,6 +451,7 @@ export function attachConsoleWs(
 
     sendJson(ws, { type: "devices", list: allDevices() });
     sendJson(ws, { type: "history", list: options.history.list(200) });
+    if (options.networkSettings) sendJson(ws, { type: "networkSettings", settings: options.networkSettings.view() });
     for (const view of playQueue.list()) sendJson(ws, { type: "queue", deviceId: view.deviceId, queue: view });
 
     ws.on("message", async (data) => {
@@ -696,6 +700,34 @@ export function attachConsoleWs(
               }
             } else {
               sendJson(ws, { type: "error", message: "设备不存在" });
+            }
+            break;
+          }
+          case "getNetworkSettings": {
+            if (!options.networkSettings) {
+              sendJson(ws, { type: "error", message: "网络设置不可用" });
+              break;
+            }
+            sendJson(ws, { type: "networkSettings", settings: options.networkSettings.view() });
+            break;
+          }
+          case "saveNetworkSettings": {
+            if (!options.networkSettings) {
+              sendJson(ws, { type: "error", message: "网络设置不可用" });
+              break;
+            }
+            try {
+              const settings = options.networkSettings.save({
+                proxy: msg.proxy,
+                githubMirror: msg.githubMirror,
+                githubToken: msg.githubToken,
+                catalogUrl: msg.catalogUrl,
+                clearGithubToken: msg.clearGithubToken
+              });
+              sendJson(ws, { type: "networkSettings", settings, saved: true });
+              console.log("[console] 网络设置已更新");
+            } catch (error) {
+              sendJson(ws, { type: "error", message: "保存网络设置失败: " + (error as Error).message });
             }
             break;
           }

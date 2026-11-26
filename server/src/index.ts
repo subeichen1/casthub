@@ -14,6 +14,8 @@ import { detectEmbeddedSubtitleTools } from "./embedded-subtitles";
 import { TvDesktopService } from "./tv-desktop";
 import { createRotatingLogStream } from "./log";
 import { resolveConsoleToken } from "./security";
+import { emptyNetworkConfig, NetworkSettingsService, normalizeNetworkConfig, resolveNetworkConfig, type NetworkConfig } from "./network-config";
+import { NetworkClient } from "./network-fetch";
 
 const DEFAULT_PORT = 9420;
 const DEFAULT_MEDIA_DIR = path.resolve(__dirname, "..", "media");
@@ -25,6 +27,8 @@ export interface ServerConfig {
   consoleToken?: string;
   /** 最终历史数据目录（通常由 DATA_DIR / PORTABLE_EXECUTABLE_DIR 推导而来）。 */
   dataDir?: string;
+  /** 网络、代理与 GitHub 访问配置；缺省全部为空。 */
+  network?: NetworkConfig;
 }
 
 export interface ServerHandle {
@@ -84,6 +88,13 @@ export function readConfigFile(dir: string): Partial<ServerConfig> {
   if (typeof obj.consoleToken === "string" && obj.consoleToken.trim()) {
     result.consoleToken = obj.consoleToken.trim();
   }
+  if (obj.network !== undefined) {
+    try {
+      result.network = normalizeNetworkConfig(obj.network);
+    } catch (error) {
+      throw new Error("config.json 的 network 配置无效: " + (error as Error).message);
+    }
+  }
   return result;
 }
 
@@ -99,7 +110,8 @@ export function resolveServerConfig(config: ServerConfig, configDir: string = pr
   const publicBaseUrl =
     envPublicBaseUrl !== undefined ? envPublicBaseUrl.trim() : fileConfig.publicBaseUrl ?? config.publicBaseUrl;
   const consoleToken = fileConfig.consoleToken ?? config.consoleToken;
-  return { mediaDir, publicBaseUrl, consoleToken, dataDir: resolveDataDir(config) };
+  const network = resolveNetworkConfig(fileConfig.network ?? config.network ?? emptyNetworkConfig());
+  return { mediaDir, publicBaseUrl, consoleToken, dataDir: resolveDataDir(config), network };
 }
 
 /**
@@ -193,6 +205,9 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   const consoleToken = resolveConsoleToken(configDir, resolved.consoleToken);
   const mediaSigningKey = randomBytes(32);
 
+  const networkSettings = new NetworkSettingsService(configDir, resolved.network as ReturnType<typeof resolveNetworkConfig>);
+  const networkClient = new NetworkClient(networkSettings.config);
+
   const logFile = (process.env.CASTHUB_LOG_FILE ?? "").trim();
   const app = Fastify({
     logger: logFile ? { level: "info", stream: createRotatingLogStream(logFile) } : true,
@@ -212,6 +227,9 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
       "request completed"
     );
   });
+  app.addHook("onClose", async () => {
+    await networkClient.close();
+  });
   const devices = new DeviceManager();
   const dlna = new DlnaService();
   const historyHandle = createHistoryStore(resolved.dataDir as string);
@@ -223,7 +241,16 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
   app.log.info(
     `内嵌字幕工具: ffprobe=${embeddedTools.ffprobe ? "可用" : "不可用"} ffmpeg=${embeddedTools.ffmpeg ? "可用" : "不可用"}`
   );
-  const tvDesktop = new TvDesktopService({ cacheDir: path.join(resolved.dataDir as string, "cache", "tv-desktop") });
+  const tvDesktop = new TvDesktopService({
+    cacheDir: path.join(resolved.dataDir as string, "cache", "tv-desktop"),
+    networkSettings,
+    networkClient
+  });
+  // 保存网络设置时：Agent 立即切换，同时失效发布信息/解析器缓存，无需重启服务。
+  networkSettings.onChange = (next) => {
+    networkClient.update(next);
+    tvDesktop.invalidateNetworkCaches();
+  };
 
   // 安全响应头：控制台页面只允许加载自身资源。
   app.addHook("onSend", async (_request, reply, payload) => {
@@ -255,7 +282,8 @@ export async function startServer(config: ServerConfig): Promise<ServerHandle> {
     mediaSigningKey,
     history,
     embeddedCacheDir,
-    tvDesktop
+    tvDesktop,
+    networkSettings
   });
 
   // 控制台静态页面（无构建步骤）

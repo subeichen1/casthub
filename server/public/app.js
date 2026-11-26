@@ -30,6 +30,8 @@
     tvDesktopAutoQueried: false,
     tvDesktopAppId: null,
     tvDesktopVariantId: null,
+    networkSettings: null,
+    networkSettingsBusy: false,
   };
 
   const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
@@ -96,6 +98,15 @@
     desktopCheckUpdatesBtn: document.getElementById("desktopCheckUpdatesBtn"),
     desktopInstallUpdateBtn: document.getElementById("desktopInstallUpdateBtn"),
     updateStatus: document.getElementById("updateStatus"),
+    networkSettingsPanel: document.getElementById("networkSettingsPanel"),
+    networkEnvHint: document.getElementById("networkEnvHint"),
+    networkProxy: document.getElementById("networkProxy"),
+    networkGithubMirror: document.getElementById("networkGithubMirror"),
+    networkCatalogUrl: document.getElementById("networkCatalogUrl"),
+    networkGithubToken: document.getElementById("networkGithubToken"),
+    networkClearGithubToken: document.getElementById("networkClearGithubToken"),
+    networkSaveBtn: document.getElementById("networkSaveBtn"),
+    networkSettingsStatus: document.getElementById("networkSettingsStatus"),
     tvDesktopPanel: document.getElementById("tvDesktopPanel"),
     tvDesktopAdbStatus: document.getElementById("tvDesktopAdbStatus"),
     tvDesktopIntro: document.getElementById("tvDesktopIntro"),
@@ -164,6 +175,7 @@
       state.tvDesktopInstalledPending = null;
       state.tvDesktopAutoQueried = false;
       requestTvDesktopInfo(false);
+      requestNetworkSettings();
     };
     ws.onclose = function (event) {
       if (event.code === 1008 && event.reason === "unauthorized") {
@@ -256,6 +268,16 @@
       renderQueue();
       return;
     }
+    if (msg.type === "networkSettings") {
+      applyNetworkSettings(msg.settings);
+      if (msg.saved) {
+        state.networkSettingsBusy = false;
+        els.networkSaveBtn.disabled = false;
+        setNetworkSettingsStatus("已保存", false);
+        showToast("网络设置已保存");
+      }
+      return;
+    }
     if (msg.type === "desktopInfo") {
       applyTvDesktopInfo(msg);
       return;
@@ -280,6 +302,11 @@
         setTvDesktopStatus(msg.message || "未知错误", true);
         setTvDesktopProgress(null);
         renderTvDesktop();
+      }
+      if (state.networkSettingsBusy) {
+        state.networkSettingsBusy = false;
+        els.networkSaveBtn.disabled = false;
+        setNetworkSettingsStatus(msg.message || "保存失败", true);
       }
       showToast(msg.message || "未知错误", true);
     }
@@ -921,6 +948,62 @@
     applyUpdateInfo(settings.updateAvailable);
   }
 
+  function setNetworkSettingsStatus(text, isError) {
+    els.networkSettingsStatus.textContent = text || "";
+    els.networkSettingsStatus.style.color = isError ? "#fca5a5" : "";
+  }
+
+  function applyNetworkSettings(settings) {
+    if (!settings) return;
+    state.networkSettings = settings;
+    els.networkSettingsPanel.hidden = false;
+    els.networkProxy.value = settings.proxy || "";
+    els.networkGithubMirror.value = settings.githubMirror || "";
+    els.networkCatalogUrl.value = settings.catalogUrl || "";
+    els.networkGithubToken.value = "";
+    els.networkGithubToken.placeholder = settings.hasGithubToken
+      ? "已配置（留空保持不变，输入新值可替换）"
+      : "未配置（可粘贴 Token）";
+    els.networkClearGithubToken.checked = false;
+    const overrides = settings.overrides || {};
+    const labels = [];
+    if (overrides.proxy) labels.push("代理");
+    if (overrides.githubMirror) labels.push("GitHub 镜像");
+    if (overrides.githubToken) labels.push("GitHub Token");
+    if (overrides.catalogUrl) labels.push("目录地址");
+    els.networkEnvHint.textContent = labels.length ? "环境变量覆盖：" + labels.join("、") : "";
+    els.networkSettingsStatus.textContent = settings.hasGithubToken
+      ? "GitHub Token 已配置（不会显示明文）"
+      : "GitHub Token 未配置";
+    els.networkSettingsStatus.style.color = "";
+  }
+
+  function requestNetworkSettings() {
+    send({ type: "getNetworkSettings" });
+  }
+
+  function initNetworkSettings() {
+    els.networkSaveBtn.addEventListener("click", function () {
+      if (state.networkSettingsBusy) return;
+      state.networkSettingsBusy = true;
+      els.networkSaveBtn.disabled = true;
+      setNetworkSettingsStatus("正在保存…", false);
+      const payload = {
+        type: "saveNetworkSettings",
+        proxy: els.networkProxy.value.trim(),
+        githubMirror: els.networkGithubMirror.value.trim(),
+        catalogUrl: els.networkCatalogUrl.value.trim(),
+        githubToken: els.networkGithubToken.value,
+        clearGithubToken: els.networkClearGithubToken.checked,
+      };
+      if (!send(payload)) {
+        state.networkSettingsBusy = false;
+        els.networkSaveBtn.disabled = false;
+        setNetworkSettingsStatus("尚未连接中枢", true);
+      }
+    });
+  }
+
   function initDesktopSettings() {
     const desktop = window.casthubDesktop;
     if (!desktop) return;
@@ -1558,4 +1641,5 @@
   start();
   initDesktopSettings();
   initTvDesktop();
+  initNetworkSettings();
 })();

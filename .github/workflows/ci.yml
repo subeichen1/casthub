@@ -48,6 +48,8 @@ jobs:
         run: cd server && npm run e2e-tv-release
       - name: E2E (TV catalog build/resolver)
         run: cd server && npm run e2e-tv-catalog
+      - name: E2E (TV network / proxy / mirror)
+        run: cd server && npm run e2e-tv-network
       - name: E2E (Security)
         run: cd server && npm run e2e-security
       - name: SBOM (CycloneDX)
