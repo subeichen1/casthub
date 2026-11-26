@@ -18,6 +18,7 @@ const FAKE_ADB = path.join(SERVER_DIR, "scripts", "fake-adb.mjs");
 const AERIAL_PACKAGE = "app.orchard.tv";
 const HONGGUO_PACKAGE = "rocks.aston.hongguotv";
 const HONGGUO_MPV_PACKAGE = "rocks.aston.hongguotv.mpv";
+const TVBOX_PACKAGE = "com.github.tvbox.osc.jun";
 
 const children = [];
 let exiting = false;
@@ -210,6 +211,19 @@ function writeHongguoRelease(file, apkPath, sha, options = {}) {
   fs.writeFileSync(file, JSON.stringify(payload, null, 2));
 }
 
+function writeTvboxRelease(file, apkPath, sha, options = {}) {
+  const payload = {
+    apkUrl: pathToFileURL(apkPath).href,
+    apkName: options.apkName ?? "TVBox_q215613905_20261111-1518-java.apk",
+    tag: options.tag ?? "20261111-1518",
+    sizeBytes: fs.statSync(apkPath).size,
+    sha256: sha,
+    publishedAt: "2026-11-12T02:09:51Z"
+  };
+  if (options.variant) payload.variant = options.variant;
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2));
+}
+
 function readAdbCalls(logFile) {
   if (!fs.existsSync(logFile)) return [];
   return fs
@@ -250,6 +264,9 @@ async function main() {
     android5: path.join(tempDir, "hongguo-android5.apk")
   };
   const hongguoReleaseJson = path.join(tempDir, "hongguo-release.json");
+  // TVBox：六个变体共用一个包名，假 APK 文件名前缀 tvbox 会被 fake-adb 推断成 com.github.tvbox.osc.jun。
+  const tvboxApk = path.join(tempDir, "tvbox-java.apk");
+  const tvboxReleaseJson = path.join(tempDir, "tvbox-release.json");
   const modeFile = path.join(tempDir, "adb-mode.txt");
   const adbLog = path.join(tempDir, "adb-calls.log");
   const adbState = path.join(tempDir, "adb-state.json");
@@ -263,6 +280,10 @@ async function main() {
   for (const file of Object.values(hongguoApks)) fs.writeFileSync(file, hongguoBytes);
   const hongguoSha = sha256(hongguoBytes);
   writeHongguoRelease(hongguoReleaseJson, hongguoApks.standard, hongguoSha);
+  const tvboxBytes = Buffer.concat([Buffer.from("PK-fake-tvbox-apk-"), Buffer.alloc(40 * 1024, 0x5c)]);
+  fs.writeFileSync(tvboxApk, tvboxBytes);
+  const tvboxSha = sha256(tvboxBytes);
+  writeTvboxRelease(tvboxReleaseJson, tvboxApk, tvboxSha);
   fs.writeFileSync(modeFile, "ok");
   fs.writeFileSync(
     adbState,
@@ -271,14 +292,14 @@ async function main() {
   console.log("测试临时目录:", tempDir);
   console.log("测试 DATA_DIR:", dataDir);
 
-  console.log("\n[1/9] 启动 fake-tv ...");
+  console.log("\n[1/10] 启动 fake-tv ...");
   const fakeTv = startProcess("fake-tv", ["scripts/fake-tv.mjs"], {
     cwd: SERVER_DIR,
     env: { ...process.env, FAKE_TV_PORT: String(TV_PORT), FAKE_TV_TOKEN: TV_TOKEN, FAKE_TV_NAME: "Fake TV" }
   });
   await fakeTv.waitFor(/LISTENING/, 10000, "fake-tv 监听");
 
-  console.log("[2/9] 启动中枢（fake adb + 本地 APK）...");
+  console.log("[2/10] 启动中枢（fake adb + 本地 APK）...");
   const serverEnv = {
     ...process.env,
     PORT: String(HTTP_PORT),
@@ -290,6 +311,7 @@ async function main() {
     CASTHUB_ADB_PATH: FAKE_ADB,
     AERIAL_RELEASE_JSON: releaseJson,
     HONGGUO_RELEASE_JSON: hongguoReleaseJson,
+    TVBOX_RELEASE_JSON: tvboxReleaseJson,
     FAKE_ADB_MODE_FILE: modeFile,
     FAKE_ADB_LOG: adbLog,
     FAKE_ADB_STATE: adbState
@@ -298,7 +320,7 @@ async function main() {
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
-  console.log("[3/9] 连接控制台并读取电视助手信息 ...");
+  console.log("[3/10] 连接控制台并读取电视助手信息 ...");
   const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await consoleClient.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   consoleClient.send({ type: "addDevice", address: `ws://127.0.0.1:${TV_PORT}`, token: TV_TOKEN });
@@ -321,7 +343,7 @@ async function main() {
   assert(info.busy === false, "电视助手初始不忙");
   assert(info.packageName === AERIAL_PACKAGE, "面板显示目标包名 " + info.packageName);
 
-  console.log("[4/9] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
+  console.log("[4/10] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
   consoleClient.send({ type: "getDesktopInfo", deviceId: device.id });
   const installedInfo = await consoleClient.waitFor(
     (m) => m.type === "desktopInfo" && m.installed && m.installed.deviceId === device.id,
@@ -389,7 +411,7 @@ async function main() {
     "desktopInfo(恢复)"
   );
 
-  console.log("[5/9] 一键安装（成功路径）...");
+  console.log("[5/10] 一键安装（成功路径）...");
   const progressSeen = [];
   const collectProgress = setInterval(() => {
     for (const msg of consoleClient.messages) {
@@ -433,7 +455,7 @@ async function main() {
     "fake adb 处理了 version 探测"
   );
 
-  console.log("[6/9] 未授权路径（unauthorized）...");
+  console.log("[6/10] 未授权路径（unauthorized）...");
   fs.writeFileSync(modeFile, "unauthorized");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const unauthorizedResult = await consoleClient.waitFor(
@@ -445,7 +467,7 @@ async function main() {
   assert(stepByKey(unauthorizedResult, "state").ok === false, "get-state 步骤被判定失败");
   assert(!stepByKey(unauthorizedResult, "install"), "未授权时不继续执行 install");
 
-  console.log("[7/9] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
+  console.log("[7/10] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
   fs.writeFileSync(modeFile, "user-restricted");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const restrictedResult = await consoleClient.waitFor(
@@ -467,7 +489,7 @@ async function main() {
   assert(customUrlResult.message.includes("https://"), "自定义地址仅允许 https: " + customUrlResult.message);
   assert(readAdbCalls(adbLog).length === callsBefore, "自定义地址被拒时没有执行 adb");
 
-  console.log("[8/9] 还原（最小步骤）与忙时拒绝 ...");
+  console.log("[8/10] 还原（最小步骤）与忙时拒绝 ...");
   fs.writeFileSync(modeFile, "slow");
   const slowMark = consoleClient.mark();
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
@@ -507,7 +529,7 @@ async function main() {
   assert(stateAfter.accessibility === "com.example/.Svc", "无障碍列表已剔除 Aerial 守护项: " + stateAfter.accessibility);
 
 
-  console.log("[9/9] 红果短剧：应用目录、变体、安装/更新提示/共存/卸载 ...");
+  console.log("[9/10] 红果短剧：应用目录、变体、安装/更新提示/共存/卸载 ...");
   const appsMark = consoleClient.mark();
   consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", force: true });
   const hongguoInfo = await consoleClient.waitForAfter(
@@ -516,7 +538,7 @@ async function main() {
     20000,
     "desktopInfo(hongguo)"
   );
-  assert((hongguoInfo.apps ?? []).length === 2, "应用目录同时列出 Aerial 与红果: " + hongguoInfo.apps.map((a) => a.id).join(","));
+  assert((hongguoInfo.apps ?? []).length === 3, "应用目录列出 Aerial、红果与 TVBox: " + hongguoInfo.apps.map((a) => a.id).join(","));
   assert(hongguoInfo.appName.includes("红果"), "面板应用名: " + hongguoInfo.appName);
   assert(hongguoInfo.installKind === "app", "红果按普通应用安装（不接管桌面）");
   assert(hongguoInfo.packageName === HONGGUO_PACKAGE, "默认变体包名 " + hongguoInfo.packageName);
@@ -645,6 +667,94 @@ async function main() {
   const finalState = JSON.parse(fs.readFileSync(adbState, "utf8"));
   assert(!finalState.packages[HONGGUO_PACKAGE], "fake 设备上红果标准版已卸载");
   assert(!!finalState.packages[HONGGUO_MPV_PACKAGE], "卸载标准版不影响 MPV 版: " + Object.keys(finalState.packages).join(","));
+
+  console.log("[10/10] TVBox：共享包名应用目录、六变体、先卸旧包再安装、卸载 ...");
+  const tvboxMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", force: true });
+  const tvboxInfo = await consoleClient.waitForAfter(
+    tvboxMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "tvbox",
+    20000,
+    "desktopInfo(tvbox)"
+  );
+  assert(tvboxInfo.appName.includes("TVBox"), "面板应用名: " + tvboxInfo.appName);
+  assert(tvboxInfo.installKind === "app", "TVBox 按普通应用安装（不接管桌面）");
+  const tvboxApp = (tvboxInfo.apps ?? []).find((a) => a.id === "tvbox");
+  assert(tvboxApp.sharedPackage === true, "TVBox 标记为多变体共用包名");
+  const hongguoSummary = (tvboxInfo.apps ?? []).find((a) => a.id === "hongguo");
+  assert(hongguoSummary.sharedPackage === false, "红果三变体包名互不相同，不标记共享包名");
+  assert((tvboxApp.variants ?? []).length === 6, "TVBox 提供六个变体: " + tvboxApp.variants.map((v) => v.id).join(","));
+  assert(tvboxApp.defaultVariant === "java", "TVBox 默认变体是 Java 标准版");
+  assert(
+    new Set(tvboxApp.variants.map((v) => v.packageName)).size === 1,
+    "六个变体共用包名: " + tvboxApp.variants[0].packageName
+  );
+  assert(tvboxInfo.release && tvboxInfo.release.tag === "20261111-1518", "TVBox 发布信息来自 TVBOX_RELEASE_JSON: " + tvboxInfo.release.tag);
+  assert(tvboxInfo.release.sha256 === tvboxSha, "TVBox 发布信息带 sha256 校验值");
+  assert(tvboxInfo.release.apkName.endsWith("-java.apk"), "默认变体取 java 资产: " + tvboxInfo.release.apkName);
+
+  // 时间戳版本号也能比较：电视上已装更早的日期构建 → 提示可更新。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({
+      packages: { [TVBOX_PACKAGE]: { version: "20261110-0900", versionCode: 1 } },
+      accessibility: "com.example/.Svc",
+      focus: TVBOX_PACKAGE
+    })
+  );
+  const tvboxInstalledMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "tvbox", deviceId: device.id, force: true });
+  const tvboxInstalled = await consoleClient.waitForAfter(
+    tvboxInstalledMark,
+    (m) => m.type === "desktopInfo" && m.installed && m.installed.appId === "tvbox",
+    20000,
+    "desktopInfo(tvbox installed)"
+  );
+  assert(tvboxInstalled.installed.installed === true, "读到电视上已装 TVBox: " + tvboxInstalled.installed.version);
+  assert(
+    tvboxInstalled.installed.updateAvailable === true,
+    "时间戳版本号可比较，提示更新: 20261110-0900 → " + tvboxInstalled.release.tag
+  );
+
+  const tvboxInstallMark = consoleClient.mark();
+  consoleClient.send({ type: "installDesktop", deviceId: device.id, appId: "tvbox" });
+  const tvboxInstall = await consoleClient.waitForAfter(
+    tvboxInstallMark,
+    (m) => m.type === "desktopResult" && m.action === "install" && m.appId === "tvbox",
+    60000,
+    "desktopResult(tvbox install)"
+  );
+  assert(tvboxInstall.ok === true, "TVBox 安装成功: " + tvboxInstall.message);
+  assert(tvboxInstall.packageName === TVBOX_PACKAGE, "安装结果包名: " + tvboxInstall.packageName);
+  const tvboxUninstallOld = stepByKey(tvboxInstall, "uninstall-old");
+  assert(!!tvboxUninstallOld, "共享包名应用先卸载同包名旧版本");
+  assert(
+    tvboxUninstallOld.command.includes("uninstall " + TVBOX_PACKAGE),
+    "卸载命令针对共享包名: " + tvboxUninstallOld.command
+  );
+  assert(tvboxUninstallOld.required === false, "卸旧包是尽力而为步骤（本来就没装也能继续）");
+  const tvboxLaunch = stepByKey(tvboxInstall, "launch");
+  assert(
+    tvboxLaunch.command.includes("com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity"),
+    "安装后启动 TVBox 主界面: " + tvboxLaunch.command
+  );
+  const tvboxState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(!!tvboxState.packages[TVBOX_PACKAGE], "fake 设备上已记录 TVBox 包");
+  assert(tvboxState.packages[TVBOX_PACKAGE].version === "1.0.0", "安装后电视上的版本号来自 APK（fake adb 记为 1.0.0）");
+
+  const tvboxUninstallMark = consoleClient.mark();
+  consoleClient.send({ type: "uninstallDesktop", deviceId: device.id, appId: "tvbox" });
+  const tvboxUninstall = await consoleClient.waitForAfter(
+    tvboxUninstallMark,
+    (m) => m.type === "desktopResult" && m.action === "uninstall" && m.appId === "tvbox",
+    60000,
+    "desktopResult(tvbox uninstall)"
+  );
+  assert(tvboxUninstall.ok === true, "TVBox 卸载成功: " + tvboxUninstall.message);
+  assert(stepByKey(tvboxUninstall, "uninstall").command.includes(TVBOX_PACKAGE), "卸载命令用 TVBox 包名");
+  assert(!stepByKey(tvboxUninstall, "remove-role"), "TVBox 卸载不解除默认桌面角色");
+  const tvboxFinalState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(!tvboxFinalState.packages[TVBOX_PACKAGE], "fake 设备上 TVBox 已卸载");
 
   consoleClient.close();
   console.log("\n✅ E2E-TV-DESKTOP 全部通过");

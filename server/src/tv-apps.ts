@@ -1,7 +1,7 @@
 // 电视应用目录：把「下载地址 + adb 命令模板」抽成可扩展的目录，Aerial 桌面与红果短剧共用同一套安装流程。
 // 本模块只有静态数据与纯解析函数（不发网络、不碰文件系统），方便单测；网络与 adb 都在 tv-desktop.ts。
 
-export type TvAppId = "aerial" | "hongguo";
+export type TvAppId = "aerial" | "hongguo" | "tvbox";
 
 /** 同一个应用的不同发行变体（独立包名，可同时安装）。 */
 export interface TvAppVariant {
@@ -113,7 +113,80 @@ const HONGGUO: TvAppDefinition = {
   notice: "红果短剧是第三方内容应用，CastHub 只负责下载官方安装包并用 adb 安装，不对内容来源与合规性负责。"
 };
 
-export const TV_APPS: readonly TvAppDefinition[] = [AERIAL, HONGGUO];
+/**
+ * TVBox（TVBoxOSC）：release-only 仓库，由 GitHub Actions 每日构建上游 TVBoxOS 源码。
+ * 六个变体共用同一个包名，同一台电视只能装一个，换版本要先卸载。
+ */
+const TVBOX: TvAppDefinition = {
+  id: "tvbox",
+  name: "TVBox（TVBoxOSC）",
+  vendor: "j4Uq/TVBoxOSC",
+  description: "第三方影视聚合客户端（不接管桌面，装完是一个普通 App），源地址需要自己配置。",
+  homepage: "https://github.com/j4Uq/TVBoxOSC",
+  repo: "j4Uq/TVBoxOSC",
+  installKind: "app",
+  defaultVariant: "java",
+  variants: [
+    {
+      id: "java",
+      name: "Java 标准版",
+      description: "内置 Java 解析器，armv7 + arm64 双架构，绝大多数电视选这个。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 19,
+      assetName: "TVBox_q215613905_{version}-java.apk"
+    },
+    {
+      id: "java32",
+      name: "Java 32 位版",
+      description: "仅 armeabi-v7a，给 32 位的老电视用。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 19,
+      assetName: "TVBox_q215613905_{version}-java32.apk"
+    },
+    {
+      id: "java64",
+      name: "Java 64 位版",
+      description: "仅 arm64-v8a，包体更小。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 21,
+      assetName: "TVBox_q215613905_{version}-java64.apk"
+    },
+    {
+      id: "python",
+      name: "Python 标准版",
+      description: "内置 Python 解析器，能跑部分 Java 版跑不动的源，包体更大（约 50 MB）。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 19,
+      assetName: "TVBox_q215613905_{version}-python.apk"
+    },
+    {
+      id: "python32",
+      name: "Python 32 位版",
+      description: "Python 解析器 + 仅 armeabi-v7a。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 19,
+      assetName: "TVBox_q215613905_{version}-python32.apk"
+    },
+    {
+      id: "python64",
+      name: "Python 64 位版",
+      description: "Python 解析器 + 仅 arm64-v8a。",
+      packageName: "com.github.tvbox.osc.jun",
+      activity: "com.github.tvbox.osc.jun/com.github.tvbox.osc.ui.activity.HomeActivity",
+      minSdk: 21,
+      assetName: "TVBox_q215613905_{version}-python64.apk"
+    }
+  ],
+  notice:
+    "TVBox 是第三方影视聚合客户端，CastHub 只负责下载官方构建并用 adb 安装，不对内容来源与合规性负责；源地址需要自己在应用里配置。六个变体共用同一个包名 com.github.tvbox.osc.jun，同一台电视只能装一个，换版本请先卸载。"
+};
+
+export const TV_APPS: readonly TvAppDefinition[] = [AERIAL, HONGGUO, TVBOX];
 
 export function findTvApp(appId: string | null | undefined): TvAppDefinition | null {
   if (!appId) return null;

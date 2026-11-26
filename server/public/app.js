@@ -1169,7 +1169,10 @@
         active.description +
         (active.installKind === "launcher"
           ? " 需要先在电视上开启 ADB 调试，安装后会接管 Home 键。"
-          : " 需要先在电视上开启 ADB 调试，安装后可在电视应用列表里打开。");
+          : " 需要先在电视上开启 ADB 调试，安装后可在电视应用列表里打开。") +
+        (active.sharedPackage
+          ? " 注意：这些变体共用同一个包名（" + variants.map(function (variant) { return variant.packageName; })[0] + "），同一台电视只能装一个，换版本请先卸载；直接重新安装会自动卸掉旧包。"
+          : "");
       if (active.notice) {
         els.tvDesktopAppNotice.textContent = active.notice;
         els.tvDesktopAppNotice.hidden = false;

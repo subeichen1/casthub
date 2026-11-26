@@ -1,6 +1,6 @@
 // 电视助手：把「下载地址 + adb 命令模板」做成可扩展的安装流程。
 // 目录（应用/变体/包名/资产名）在 tv-apps.ts；本模块只负责取发布信息、下载 APK、跑 adb 与校验结果。
-// 目前支持两类应用：launcher（Aerial 极简桌面，会接管 Home 键）与 app（普通应用，如红果短剧 TV）。
+// 目前支持两类应用：launcher（Aerial 极简桌面，会接管 Home 键）与 app（普通应用，如红果短剧 TV、TVBox）。
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -77,6 +77,8 @@ export interface TvDesktopAppSummary {
   installKind: "launcher" | "app";
   defaultVariant: string;
   notice: string;
+  /** 多变体共用同一个包名（TVBox）：只能装一个，换版本要先卸载。 */
+  sharedPackage: boolean;
   variants: ReturnType<typeof variantSummary>[];
 }
 
@@ -642,19 +644,34 @@ async function launcherInstallSteps(
   return { ok: true, failure: null };
 }
 
-/** 普通应用（红果短剧）：只做连接、安装、启动与预编译，不动桌面/无障碍/AppOps。 */
+/** 应用目录里所有变体共用一个包名的应用（TVBox）：先卸旧包，否则 install -r 会因签名/版本冲突失败。 */
+function sharedPackageApp(app: TvAppDefinition): boolean {
+  return app.variants.length > 1 && new Set(app.variants.map((item) => item.packageName)).size === 1;
+}
+
+/** 普通应用（红果短剧 / TVBox）：只做连接、安装、启动与预编译，不动桌面/无障碍/AppOps。 */
 async function appInstallSteps(
   ctx: ExecContext,
   serial: string,
   apkPath: string,
   variant: TvAppVariant,
-  appName: string
+  appName: string,
+  sharedPackage: boolean
 ): Promise<{ ok: boolean; failure: string | null }> {
   const required: StepSpec[] = [
     { key: "connect", title: "连接电视 adb", args: ["connect", serial], required: true, timeoutMs: ADB_CONNECT_TIMEOUT_MS, check: (r) => /connected to|already connected/i.test(r.stdout + r.stderr) },
-    { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) },
-    { key: "install", title: "安装 " + appName + " APK", args: ["-s", serial, "install", "-r", apkPath], required: true, timeoutMs: ADB_INSTALL_TIMEOUT_MS, check: (r) => stepOk(r) && /success/i.test(r.stdout + r.stderr) }
+    { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) }
   ];
+  // 多变体共用一个包名时，先卸掉旧包再装，避免「签名冲突 / 版本降级」把安装卡死。
+  if (sharedPackage) {
+    required.push({
+      key: "uninstall-old",
+      title: "卸载同包名的旧版本",
+      args: ["-s", serial, "uninstall", variant.packageName],
+      required: false
+    });
+  }
+  required.push({ key: "install", title: "安装 " + appName + " APK", args: ["-s", serial, "install", "-r", apkPath], required: true, timeoutMs: ADB_INSTALL_TIMEOUT_MS, check: (r) => stepOk(r) && /success/i.test(r.stdout + r.stderr) });
   for (const spec of required) {
     const outcome = await runStep(ctx, spec);
     if (!outcome.ok) return { ok: false, failure: explainAdbFailure(outcome.output) ?? spec.title + " 失败" };
@@ -836,8 +853,9 @@ export function parseInstalledVersion(output: string): string | null {
 
 function versionSegments(value: string): number[] | null {
   const cleaned = value.trim().replace(/^v/i, "");
-  if (!/^[0-9]+(?:\.[0-9]+)*$/.test(cleaned)) return null;
-  return cleaned.split(".").map((part) => Number(part));
+  // TVBox 这类每日构建用「日期-时刻」当版本号（20261111-1518），按数字段比较即可。
+  if (!/^[0-9]+(?:[.-][0-9]+)*$/.test(cleaned)) return null;
+  return cleaned.split(/[.-]/).map((part) => Number(part));
 }
 
 /** 语义化比较：a > b 返回正数，相等 0，a < b 负数；任一方无法解析返回 null（此时不提示更新）。 */
@@ -935,6 +953,7 @@ export class TvDesktopService {
         installKind: item.installKind,
         defaultVariant: item.defaultVariant,
         notice: item.notice,
+        sharedPackage: sharedPackageApp(item),
         variants: item.variants.map(variantSummary)
       })),
       activeAppId: app.id,
@@ -1091,7 +1110,7 @@ export class TvDesktopService {
       const outcome =
         app.installKind === "launcher"
           ? await launcherInstallSteps(ctx, serial, apkPath)
-          : await appInstallSteps(ctx, serial, apkPath, variant, app.name);
+          : await appInstallSteps(ctx, serial, apkPath, variant, app.name, sharedPackageApp(app));
       if (!outcome.ok) {
         return fail(outcome.failure ?? "安装失败", release);
       }

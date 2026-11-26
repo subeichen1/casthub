@@ -12,6 +12,8 @@ const PACKAGE_BY_FILE = [
   ["hongguo-android5", "rocks.aston.hongguotv.android5test"],
   ["hongguo-mpv", "rocks.aston.hongguotv.mpv"],
   ["hongguo", "rocks.aston.hongguotv"],
+  // TVBox 六个变体共用一个包名。
+  ["tvbox", "com.github.tvbox.osc.jun"],
   ["aerial", AERIAL_PACKAGE]
 ];
 

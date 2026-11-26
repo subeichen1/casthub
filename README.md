@@ -114,7 +114,7 @@ curl -fsSL https://github.com/subeichen1/casthub/releases/latest/download/instal
 
 - **设备**：输入电视显示的 `ws://<电视 IP>:9417` 和 8 位配对码，添加并查看设备在线状态；
 - **播放历史**：列出文件名、更新时间与进度百分比，可继续播放、从头播放、删除单条或清空全部；
-- **电视助手**：给 Android TV 一键安装 Aerial 极简桌面（可一键还原），也能安装红果短剧 TV 等普通电视应用（见下文）；
+- **电视助手**：给 Android TV 一键安装 Aerial 极简桌面（可一键还原），也能安装红果短剧 TV、TVBox 等普通电视应用（见下文）；
 - **媒体库**：浏览 `MEDIA_DIR` 下的视频文件，显示文件名、类型与大小；有播放历史的文件默认从上次位置继续，并提供「从头」入口；
 - **播放控制**：显示当前播放状态、进度条、暂停/继续和停止按钮。
 
@@ -374,14 +374,15 @@ npm start
 
 ![DLNA 设备列表](docs/dlna-ui-01-devices.png)
 
-## 电视助手（Aerial 桌面 / 红果短剧 TV）
+## 电视助手（Aerial 桌面 / 红果短剧 TV / TVBox）
 
-电视助手把「下载 APK + adb 安装」做成控制台里的一键操作，目前支持两个应用：
+电视助手把「下载 APK + adb 安装」做成控制台里的一键操作，目前支持三个应用：
 
 - **Aerial 极简桌面**（`app.orchard.tv`）：[Aerial](https://github.com/pengchujin/aerial-tv)（MIT）把 Android TV 的桌面换成 Apple TV 风格的极简桌面，会接管 Home 键，因此安装与还原都带桌面角色、无障碍守护等额外步骤。
 - **红果短剧 TV**（`rocks.aston.hongguotv`）：[红果短剧](https://github.com/aston314/hongguo-tv) 的 Android TV 客户端，来自只发布安装包的仓库 [aston314/hongguo-tv-releases](https://github.com/aston314/hongguo-tv-releases)。它是**普通应用**，装完出现在电视的应用列表里，不动默认桌面、不改 Home 键。
+- **TVBox（TVBoxOSC）**（`com.github.tvbox.osc.jun`）：[TVBoxOSC](https://github.com/j4Uq/TVBoxOSC) 是第三方影视聚合客户端的自动构建仓库，由 GitHub Actions 每天从上游 TVBoxOS 源码编译、用仓库自带证书签名后发布。同样是**普通应用**，装完在电视应用列表里打开；源地址需要在应用内自己配置。
 
-两者都是第三方项目。CastHub 只做「下载地址 + adb 命令模板」，**不内置也不分发 APK**，安装包始终从各自官方发布页获取。
+三者都是第三方项目。CastHub 只做「下载地址 + adb 命令模板」，**不内置也不分发 APK**，安装包始终从各自官方发布页获取。
 
 ### 使用前提
 
@@ -392,12 +393,12 @@ npm start
 
 ### 操作
 
-在控制台左侧「电视助手」面板里先选应用，再选目标电视（IP 从设备列表自动解析，不需要手输），点「一键安装桌面」/「安装 红果短剧 TV」。安装过程会依次显示下载进度与每一步 adb 命令的执行结果；失败时会给出中文原因（未授权、电视禁止安装、存储不足、签名冲突、连不上 5555 等）。
+在控制台左侧「电视助手」面板里先选应用，再选目标电视（IP 从设备列表自动解析，不需要手输），点「一键安装桌面」/「安装 红果短剧 TV」/「安装 TVBox」。安装过程会依次显示下载进度与每一步 adb 命令的执行结果；失败时会给出中文原因（未授权、电视禁止安装、存储不足、签名冲突、连不上 5555 等）。
 
 - **Aerial**：装完后按电视 Home 键，选择 Aerial 作为默认桌面即可。Aerial 的安装会额外执行官方推荐的可选步骤（定位/WRITE_SECURE_SETTINGS 授权、7 条 appops、通知监听、启动、预编译），验收三条：默认 HOME、无障碍守护服务、前台窗口。
-- **红果短剧 TV**：只执行必需步骤（下载 → `adb connect` → `get-state` → `install -r`）加两条可选（启动主界面、预编译），不申请桌面/无障碍相关权限，验收只看包是否装上、前台是否切到红果。装完在电视的应用列表里打开即可，不需要也不要选它当默认桌面。
+- **红果短剧 TV / TVBox**：只执行必需步骤（下载 → `adb connect` → `get-state` → `install -r`）加两条可选（启动主界面、预编译），不申请桌面/无障碍相关权限，验收只看包是否装上、前台是否切到该应用。装完在电视的应用列表里打开即可，不需要也不要选它当默认桌面。TVBox 的六个变体共用一个包名，安装前会多跑一条可选的「卸载同包名旧版本」，避免签名冲突导致安装失败。
 
-「还原原桌面」只对 Aerial 显示，执行通用还原步骤（关闭守护广播、撤销权限、清理 appops、移出无障碍服务、释放 HOME role、卸载）。海信、TCL、小米等品牌还有厂商定制项，面板里的「复制官方还原命令」会给出 Aerial 官方 `restore.sh` 命令，在 macOS/Linux 终端执行。红果这类普通应用的按钮是「卸载 红果短剧 TV」，只做 `am force-stop` + `adb uninstall`，不碰桌面角色与无障碍设置。
+「还原原桌面」只对 Aerial 显示，执行通用还原步骤（关闭守护广播、撤销权限、清理 appops、移出无障碍服务、释放 HOME role、卸载）。海信、TCL、小米等品牌还有厂商定制项，面板里的「复制官方还原命令」会给出 Aerial 官方 `restore.sh` 命令，在 macOS/Linux 终端执行。红果、TVBox 这类普通应用的按钮是「卸载 <应用名>」，只做 `am force-stop` + `adb uninstall`，不碰桌面角色与无障碍设置。
 
 ### 红果短剧 TV 的三个变体
 
@@ -411,9 +412,26 @@ npm start
 
 在面板的应用下拉里选中「红果短剧 TV」后会出现变体下拉，默认标准版；切换变体会重新查询该变体对应的安装包与已装版本。
 
+### TVBox 的六个变体（共用一个包名）
+
+TVBoxOSC 的发布页对每个上游分支提供多个 APK，CastHub 取其中的 `TVBox_q215613905_<构建时间>-<flavor>.apk` 系列（`q215613905/TVBoxOS` 分支）：
+
+| 变体 | 资产后缀 | 架构 | 适用 |
+| --- | --- | --- | --- |
+| Java 标准版（默认） | `-java.apk` | armeabi-v7a + arm64-v8a | 绝大多数电视 |
+| Java 32 位版 | `-java32.apk` | 仅 armeabi-v7a | 32 位老电视 |
+| Java 64 位版 | `-java64.apk` | 仅 arm64-v8a | 包体更小 |
+| Python 标准版 | `-python.apk` | armeabi-v7a + arm64-v8a | 需要 Python 解析器的源，包体约 50 MB |
+| Python 32 位版 | `-python32.apk` | 仅 armeabi-v7a | — |
+| Python 64 位版 | `-python64.apk` | 仅 arm64-v8a | — |
+
+**与红果的关键差别：六个变体共用同一个包名 `com.github.tvbox.osc.jun`，同一台电视只能装一个。** 想换变体请先点「卸载 TVBox」再装；直接点安装也会先执行一次可选的 `adb uninstall`（旧包不存在时该步骤失败也不影响后续安装）。
+
+版本号不是语义化版本，而是构建时间戳（如 `20261111-1518`），面板照样能比较新旧并提示更新。
+
 ### 版本与校验
 
-面板默认使用 GitHub Releases 的最新正式版，并显示版本号、体积与 SHA-256；发布页提供 `digest` 时下载后会强制校验，校验失败即中止且不会安装。Aerial 的资产名固定为 `aerial-standard.apk`；红果按变体匹配 `hongguo-tv-<版本>.apk`、`hongguo-tv-mpv-<版本>.apk`、`hongguo-tv-android5-<版本>.apk`。Aerial 在 GitHub API 不可达时会回退官网镜像直链（此时无校验和，面板会标注「官网镜像」）；红果没有镜像，查询失败时面板直接报错、不下载。
+面板默认使用 GitHub Releases 的最新正式版，并显示版本号、体积与 SHA-256；发布页提供 `digest` 时下载后会强制校验，校验失败即中止且不会安装。Aerial 的资产名固定为 `aerial-standard.apk`；红果按变体匹配 `hongguo-tv-<版本>.apk`、`hongguo-tv-mpv-<版本>.apk`、`hongguo-tv-android5-<版本>.apk`；TVBox 按变体匹配 `TVBox_q215613905_<构建时间>-java.apk`、`-java32`、`-java64`、`-python`、`-python32`、`-python64`。Aerial 在 GitHub API 不可达时会回退官网镜像直链（此时无校验和，面板会标注「官网镜像」）；红果与 TVBox 没有镜像，查询失败时面板直接报错、不下载。
 
 需要装特定版本时，在「装指定版本 / 手动安装」里填 https 的 APK 直链；手动地址不会自动带校验和，面板会再确认一次。
 
@@ -421,18 +439,18 @@ npm start
 
 ### 已装版本与更新提示
 
-面板选中电视后会自动读取电视上已装的应用版本（`adb shell dumpsys package <包名>` 的 `versionName`），显示「电视上的 Aerial：v2.11」或「电视上的 红果短剧 TV：v0.2.182」；如果 GitHub 上的最新正式版更高，会额外提示「有新版本 vX，可重新一键安装升级」。比较用语义化版本号，镜像渠道或版本号解析不出来时不提示更新，避免误报。红果三个变体分别查询各自的包名，装了两个变体时两条记录互不干扰。
+面板选中电视后会自动读取电视上已装的应用版本（`adb shell dumpsys package <包名>` 的 `versionName`），显示「电视上的 Aerial：v2.11」或「电视上的 红果短剧 TV：v0.2.182」；如果 GitHub 上的最新正式版更高，会额外提示「有新版本 vX，可重新一键安装升级」。比较用数字段逐段对比（`0.2.182`、`20261111-1518` 这类都能比），镜像渠道或版本号解析不出来时不提示更新，避免误报。红果三个变体分别查询各自的包名，装了两个变体时两条记录互不干扰；TVBox 六个变体共用一个包名，读到的就是当前装着的那一个。
 
 CastHub **不会自动升级**已装的应用：确认要升级时再点一次安装按钮即可（内部是 `adb install -r`，保留数据）。发布信息默认缓存 10 分钟，点面板上的「刷新」会绕过缓存重新查询 GitHub Releases，同时重新读取已装版本。
 
-调试或多网环境可以用环境变量注入发布信息，跳过 GitHub 查询：`AERIAL_RELEASE_JSON`（Aerial）与 `HONGGUO_RELEASE_JSON`（红果）指向一个本地 JSON 文件，内容形如 `{"tag":"0.2.182","apkName":"hongguo-tv-0.2.182.apk","apkUrl":"https://…/hongguo-tv-0.2.182.apk","sizeBytes":30608185,"sha256":"…","publishedAt":"…","variant":"standard"}`；红果可带 `variant` 字段限定只对该变体生效（缺省 `apkUrl` 或变体不匹配时报错，不会套用别的变体的安装包）。
+调试或多网环境可以用环境变量注入发布信息，跳过 GitHub 查询：`AERIAL_RELEASE_JSON`（Aerial）、`HONGGUO_RELEASE_JSON`（红果）与 `TVBOX_RELEASE_JSON`（TVBox）指向一个本地 JSON 文件（允许带 UTF-8 BOM），内容形如 `{"tag":"0.2.182","apkName":"hongguo-tv-0.2.182.apk","apkUrl":"https://…/hongguo-tv-0.2.182.apk","sizeBytes":30608185,"sha256":"…","publishedAt":"…","variant":"standard"}`；红果与 TVBox 可带 `variant` 字段限定只对该变体生效（缺省 `apkUrl` 或变体不匹配时报错，不会套用别的变体的安装包）。
 
 ### 风险提示
 
 
 Aerial 会接管电视的默认桌面与 Home 键，属于对电视系统的修改。请在确认可以还原后再安装；还原依赖 adb 仍然可用，如果安装后又关闭了电视的 ADB 调试，就只能用官方脚本或电视恢复出厂设置。CastHub 不对第三方桌面的稳定性负责。
 
-红果短剧 TV 不修改桌面，但它是第三方内容应用：内容版权、账号、会员与隐私政策均由该应用与其服务方决定，CastHub 只负责把它装上，不参与内容分发也不对其内容负责。安装包来自第三方 GitHub 发布页，面板会校验发布页给出的 SHA-256；手动填写的直链没有校验和，请自行确认来源。
+红果短剧 TV 与 TVBox 不修改桌面，但都是第三方内容应用：内容版权、账号、会员与隐私政策均由该应用与其服务方决定，CastHub 只负责把它装上，不参与内容分发也不对其内容负责。TVBoxOSC 本身不附带任何源地址，装完需要在应用里自行配置，源地址的可用性与合法性由使用者判断。安装包来自第三方 GitHub 发布页，面板会校验发布页给出的 SHA-256；手动填写的直链没有校验和，请自行确认来源。
 
 ## 开发与测试
 
@@ -447,7 +465,7 @@ node scripts/e2e-dlna.mjs   # fake-dlna + 中枢，DLNA 降级流程
 node --import tsx scripts/e2e-subtitles.mjs # 多格式字幕解析 + /api/subtitle + /media
 node --import tsx scripts/e2e-embedded-subtitles.mjs # 内嵌字幕三模式 + 缓存路由 + DLNA DIDL
 npm run e2e-queue   # DLNA 播放队列 + 自动连播 + 停止/清空
-npm run e2e-tv-desktop # 电视助手：fake adb 覆盖 Aerial 安装/未授权/厂商拒绝/还原 + 红果三变体安装与共存
+npm run e2e-tv-desktop # 电视助手：fake adb 覆盖 Aerial 安装/未授权/厂商拒绝/还原 + 红果三变体安装与共存 + TVBox 六变体（共享包名）
 npm run e2e-security # 安全边界与历史存储恢复
 npm run test:updater # 桌面自动更新器单元测试
 ```
