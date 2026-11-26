@@ -1,9 +1,9 @@
 {
   "name": "casthub-server",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19.0"
   },
   "description": "CastHub 局域网投屏中枢",
   "main": "desktop/main.js",

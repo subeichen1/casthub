@@ -9,8 +9,32 @@ permissions:
   contents: write
 
 jobs:
+  validate-version:
+    name: Validate tag and package versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Validate versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          package_version="$(node -p "require('./server/package.json').version")"
+          gradle_version="$(awk -F'"' '/^[[:space:]]*versionName[[:space:]]*=/{print $2; exit}' tv-app/app/build.gradle.kts)"
+          echo "tag=${tag_version} package=${package_version} gradle=${gradle_version}"
+          if [ -z "$package_version" ] || [ "$tag_version" != "$package_version" ]; then
+            echo "Tag version ($tag_version) does not match server/package.json version ($package_version)" >&2
+            exit 1
+          fi
+          if [ -z "$gradle_version" ] || [ "$tag_version" != "$gradle_version" ]; then
+            echo "Tag version ($tag_version) does not match tv-app/app/build.gradle.kts versionName ($gradle_version)" >&2
+            exit 1
+          fi
+
   windows:
     name: Build signed Windows portable
+    needs: validate-version
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -79,6 +103,7 @@ jobs:
 
   android:
     name: Build signed Android TV APK
+    needs: validate-version
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -132,6 +157,7 @@ jobs:
 
   source:
     name: Package source archive
+    needs: validate-version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
