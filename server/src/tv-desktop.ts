@@ -21,6 +21,8 @@ import {
   parseDeviceProfile,
   releaseJsonEnvName,
   releasesApiUrl,
+  releasesListApiUrl,
+  selectReleaseFromList,
   variantSummary
 } from "./tv-apps";
 
@@ -38,7 +40,8 @@ const MAX_TOOL_OUTPUT_BYTES = 256 * 1024;
 const RELEASE_CACHE_MS = 10 * 60 * 1000;
 const RELEASE_FETCH_TIMEOUT_MS = 12_000;
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
-const MAX_APK_BYTES = 64 * 1024 * 1024;
+/** APK 默认上限 200 MiB；应用可用 maxApkBytes 覆盖。 */
+const MAX_APK_BYTES = 200 * 1024 * 1024;
 
 export type AdbSource = "env" | "local" | "path" | "missing";
 
@@ -408,8 +411,20 @@ export async function fetchAppRelease(
     }
   } else {
     try {
-      release = parseAppRelease(app, variant, await fetchJson(releasesApiUrl(app), RELEASE_FETCH_TIMEOUT_MS));
-      if (!release) error = "GitHub 发布页里没有找到 " + variant.assetName.replace("{version}", "*");
+      const apiBase = envValue("CASTHUB_GITHUB_API_BASE") || undefined;
+      if (app.releaseTagPattern) {
+        const picked = selectReleaseFromList(
+          app,
+          await fetchJson(releasesListApiUrl(app, apiBase), RELEASE_FETCH_TIMEOUT_MS)
+        );
+        release = picked ? parseAppRelease(app, variant, picked) : null;
+        if (!release) {
+          error = "最近 15 条 Release 中未找到匹配 " + app.releaseTagPattern + " 且包含 .apk 的版本";
+        }
+      } else {
+        release = parseAppRelease(app, variant, await fetchJson(releasesApiUrl(app, apiBase), RELEASE_FETCH_TIMEOUT_MS));
+        if (!release) error = "GitHub 发布页里没有找到 " + variant.assetName.replace("{version}", "*");
+      }
     } catch (caught) {
       error = "查询 " + app.name + " 最新版本失败: " + errorMessage(caught);
     }
@@ -453,24 +468,58 @@ export function sha256File(filePath: string): Promise<string> {
   });
 }
 
-function assertRemoteUrl(url: string): void {
-  let parsed: URL;
+function isLoopbackHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+/** 仅供本地 E2E：显式开关 + 严格回环地址，生产 HTTPS 校验不受影响。 */
+function allowInsecureLoopback(): boolean {
+  return envValue("CASTHUB_ALLOW_INSECURE_LOOPBACK") === "1";
+}
+
+function isAllowedDownloadUrl(raw: string): boolean {
   try {
-    parsed = new URL(url);
+    const parsed = new URL(raw);
+    if (parsed.protocol === "file:" || parsed.protocol === "https:") return true;
+    return parsed.protocol === "http:" && allowInsecureLoopback() && isLoopbackHostname(parsed.hostname);
   } catch {
-    throw new Error("APK 地址格式错误");
+    return false;
   }
-  if (parsed.protocol === "file:") return;
-  if (parsed.protocol !== "https:") throw new Error("APK 地址必须是 https://（或本机 file:// 测试地址）");
+}
+
+function assertRemoteUrl(url: string): void {
+  if (!isAllowedDownloadUrl(url)) {
+    throw new Error("APK 地址必须是 https://（或本机 file:// 测试地址；HTTP 仅限显式回环测试）");
+  }
+}
+
+export type DownloadProgress = (percent: number) => void;
+
+export interface DownloadApkOptions {
+  onProgress?: DownloadProgress;
+  /** 覆盖默认 200 MiB 上限（字节）。 */
+  maxBytes?: number;
+}
+
+function normalizeDownloadOptions(input?: DownloadProgress | DownloadApkOptions): DownloadApkOptions {
+  return typeof input === "function" ? { onProgress: input } : (input ?? {});
+}
+
+function resolveMaxBytes(value: number | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  return MAX_APK_BYTES;
 }
 
 /** 下载 APK 到缓存目录；已存在且校验通过则直接复用。返回本地路径与实际 sha256。 */
 export async function downloadApk(
   release: TvAppReleaseInfo,
   cacheDir: string,
-  onProgress?: (percent: number) => void
+  optionsOrProgress?: DownloadProgress | DownloadApkOptions
 ): Promise<{ filePath: string; sha256: string; cached: boolean }> {
   assertRemoteUrl(release.apkUrl);
+  const options = normalizeDownloadOptions(optionsOrProgress);
+  const maxBytes = resolveMaxBytes(options.maxBytes);
   await fs.promises.mkdir(cacheDir, { recursive: true });
   const safeTag = release.tag.replace(/[^0-9A-Za-z._-]/g, "_").slice(0, 40) || "latest";
   // 同一 tag 可能对应不同下载地址（尤其 custom），缓存名必须带上 URL 摘要，避免复用旧包。
@@ -499,22 +548,24 @@ export async function downloadApk(
       redirect: "follow",
       signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS)
     });
-    if (response.url && !/^https:\/\//i.test(response.url)) {
+    if (response.url && !isAllowedDownloadUrl(response.url)) {
       throw new Error("下载 APK 时重定向到了非 HTTPS 地址");
     }
     if (!response.ok) throw new Error("下载 APK 失败: HTTP " + response.status);
     if (!response.body) throw new Error("下载 APK 失败: 响应为空");
     const total = Number(response.headers.get("content-length") ?? 0);
-    if (total > MAX_APK_BYTES) throw new Error("APK 体积异常: " + total + " 字节");
+    if (total > maxBytes) throw new Error("APK 体积异常: " + total + " 字节，超过上限 " + maxBytes + " 字节");
     const handle = await fs.promises.open(partial, "w");
     let received = 0;
     try {
       for await (const chunk of response.body) {
         const buffer = Buffer.from(chunk);
         received += buffer.length;
-        if (received > MAX_APK_BYTES) throw new Error("APK 体积异常，已中止下载");
+        if (received > maxBytes) throw new Error("APK 体积异常，已中止下载：超过上限 " + maxBytes + " 字节");
         await handle.write(buffer);
-        if (onProgress && total > 0) onProgress(Math.min(100, Math.round((received / total) * 100)));
+        if (options.onProgress && total > 0) {
+          options.onProgress(Math.min(100, Math.round((received / total) * 100)));
+        }
       }
     } finally {
       await handle.close();
@@ -1175,7 +1226,10 @@ export class TvDesktopService {
 
       let apkPath: string;
       try {
-        const downloaded = await downloadApk(release, this.cacheDir, options?.onProgress);
+        const downloaded = await downloadApk(release, this.cacheDir, {
+            onProgress: options?.onProgress,
+            maxBytes: app.maxApkBytes
+          });
         apkPath = downloaded.filePath;
         steps.push({
           key: "download",

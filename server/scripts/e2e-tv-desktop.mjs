@@ -830,6 +830,18 @@ async function main() {
   assert(arm64Info.variantId === "java64", "主 ABI 是 arm64-v8a 时 TVBox 选 Java 64 位版: " + arm64Info.variantId);
   assert(arm64Info.variantReason.includes("arm64-v8a"), "匹配依据带上 ABI: " + arm64Info.variantReason);
 
+  // Aerial 只有一个默认变体；设备属性成功命中时也必须标 auto，而不是 fallback。
+  const aerialAutoMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "aerial", deviceId: device.id, force: true });
+  const aerialAutoInfo = await consoleClient.waitForAfter(
+    aerialAutoMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "aerial" && !!m.deviceProfile,
+    30000,
+    "desktopInfo(aerial 默认变体)"
+  );
+  assert(aerialAutoInfo.variantId === "standard", "Aerial 保持默认变体: " + aerialAutoInfo.variantId);
+  assert(aerialAutoInfo.variantSource === "auto", "设备命中默认变体时标记 source=auto: " + aerialAutoInfo.variantSource);
+
   // 读不到系统属性（getprop 空输出）→ 回退默认变体，绝不挡住安装。
   fs.writeFileSync(adbState, JSON.stringify({ packages: {}, accessibility: "com.example/.Svc", props: {} }));
   const noPropMark = consoleClient.mark();

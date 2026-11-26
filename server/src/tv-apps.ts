@@ -32,6 +32,10 @@ export interface TvAppDefinition {
   homepage: string;
   /** GitHub owner/repo，可以是没有源码的 release-only 仓库。 */
   repo: string;
+  /** 可选：只接受 tag_name 匹配该正则的 Release（用于多平台混发仓库，跳过 desktop/webos/linux 等包）。 */
+  releaseTagPattern?: string;
+  /** 可选：该应用 APK 的最大字节数；未配置时使用下载器默认的 200 MiB 上限。 */
+  maxApkBytes?: number;
   /** launcher：会接管电视桌面（需要额外授权步骤）；app：普通应用。 */
   installKind: "launcher" | "app";
   defaultVariant: string;
@@ -86,6 +90,8 @@ const HONGGUO: TvAppDefinition = {
   description: "第三方短剧播放应用（不接管桌面，装完就是一个普通 App）。",
   homepage: "https://github.com/aston314/hongguo-tv",
   repo: "aston314/hongguo-tv-releases",
+  // 该仓库同时发布 desktop-v* / webos-v* / linux-v*，只有 vX.Y.Z 是 Android APK。
+  releaseTagPattern: "^v\\d+\\.\\d+\\.\\d+",
   installKind: "app",
   defaultVariant: "standard",
   variants: [
@@ -316,12 +322,63 @@ export function releaseJsonEnvName(app: TvAppDefinition): string {
   return app.id.toUpperCase() + "_RELEASE_JSON";
 }
 
-export function releasesApiUrl(app: TvAppDefinition): string {
-  return "https://api.github.com/repos/" + app.repo + "/releases/latest";
+const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
+
+function normalizeApiBase(apiBase: string): string {
+  return apiBase.replace(/\/+$/, "");
 }
 
-export function releaseByTagApiUrl(app: TvAppDefinition, tag: string): string {
-  return "https://api.github.com/repos/" + app.repo + "/releases/tags/" + encodeURIComponent(tag);
+export function releasesApiUrl(app: TvAppDefinition, apiBase: string = DEFAULT_GITHUB_API_BASE): string {
+  return normalizeApiBase(apiBase) + "/repos/" + app.repo + "/releases/latest";
+}
+
+/** 多平台混发仓库：按列表顺序取最近 15 条 Release，由调用方按 Tag 正则与 .apk 资产过滤。 */
+export function releasesListApiUrl(app: TvAppDefinition, apiBase: string = DEFAULT_GITHUB_API_BASE): string {
+  return normalizeApiBase(apiBase) + "/repos/" + app.repo + "/releases?per_page=15";
+}
+
+export function releaseByTagApiUrl(
+  app: TvAppDefinition,
+  tag: string,
+  apiBase: string = DEFAULT_GITHUB_API_BASE
+): string {
+  return normalizeApiBase(apiBase) + "/repos/" + app.repo + "/releases/tags/" + encodeURIComponent(tag);
+}
+
+/**
+ * 从 GitHub `/releases?per_page=15` 列表里选第一条：非 draft、tag 匹配且包含 .apk 资产的正式 Release。
+ * 正式版优先；只有列表里没有正式版时，才退回第一条匹配的 prerelease。
+ * 返回原始 release 对象，继续交给 parseAppRelease 做变体资产匹配。
+ */
+export function selectReleaseFromList(app: TvAppDefinition, payload: unknown): Record<string, unknown> | null {
+  if (!Array.isArray(payload) || !app.releaseTagPattern) return null;
+  let pattern: RegExp;
+  try {
+    pattern = new RegExp(app.releaseTagPattern);
+  } catch {
+    return null;
+  }
+  let firstPrerelease: Record<string, unknown> | null = null;
+  for (const item of payload) {
+    if (!item || typeof item !== "object") continue;
+    const release = item as Record<string, unknown>;
+    if (release.draft === true) continue;
+    const tag = typeof release.tag_name === "string" ? release.tag_name : "";
+    if (!pattern.test(tag)) continue;
+    const assets = Array.isArray(release.assets) ? release.assets : [];
+    const hasApk = assets.some((asset) => {
+      if (!asset || typeof asset !== "object") return false;
+      const name = (asset as Record<string, unknown>).name;
+      return typeof name === "string" && /\.apk$/i.test(name);
+    });
+    if (!hasApk) continue;
+    if (release.prerelease === true) {
+      if (!firstPrerelease) firstPrerelease = release;
+      continue;
+    }
+    return release;
+  }
+  return firstPrerelease;
 }
 
 export function releaseDownloadUrl(app: TvAppDefinition, tag: string, assetName: string): string {
@@ -483,7 +540,8 @@ export function matchVariantForDevice(
   const chosen = ranked[0];
   return {
     variant: chosen,
-    source: chosen.id === app.defaultVariant ? "fallback" : "auto",
+    // 只要设备属性参与了匹配，即使命中默认变体也算 auto；fallback 只用于信息不足/全部被排除。
+    source: "auto",
     reason: describeProfile(profile) + " → " + chosen.name
   };
 }
