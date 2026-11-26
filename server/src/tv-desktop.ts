@@ -1,19 +1,30 @@
-// 电视助手：把电视桌面换成 Aerial（第三方开源项目 pengchujin/aerial-tv）的一键安装与最小还原。
-// 本模块只做「APK 地址 + adb 命令模板」两件事：不内置 APK，不做通用 APK 安装器。
+// 电视助手：把「下载地址 + adb 命令模板」做成可扩展的安装流程。
+// 目录（应用/变体/包名/资产名）在 tv-apps.ts；本模块只负责取发布信息、下载 APK、跑 adb 与校验结果。
+// 目前支持两类应用：launcher（Aerial 极简桌面，会接管 Home 键）与 app（普通应用，如红果短剧 TV）。
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import {
+  TV_APPS,
+  type TvAppDefinition,
+  type TvAppReleaseInfo,
+  type TvAppVariant,
+  findTvApp,
+  findTvVariant,
+  parseAppCustomRelease,
+  parseAppRelease,
+  releaseJsonEnvName,
+  releasesApiUrl,
+  variantSummary
+} from "./tv-apps";
 
-/** Aerial 正式版包名（Lite 版为 app.orchard.tv.lite，本模块不安装 Lite）。 */
-const AERIAL_PACKAGE = "app.orchard.tv";
-/** Aerial 守护 APK 包名（由正式版内部引导安装，这里只用于提示）。 */
-const AERIAL_REVIVAL_LISTENER = "app.orchard.tv/app.orchard.tv.guard.RevivalListener";
-const AERIAL_HOME_GUARD_SERVICE = "app.orchard.tv/.guard.HomeGuardService";
-const GITHUB_LATEST_RELEASE = "https://api.github.com/repos/pengchujin/aerial-tv/releases/latest";
+/** 兼容旧调用方：Aerial 发布信息的结构就是通用发布信息。 */
+export type AerialReleaseInfo = TvAppReleaseInfo;
+
+/** 官网直链兜底（拿不到版本号与校验和，只在 GitHub 查询失败时使用）。 */
 const MIRROR_APK_URL = "https://aerial.qust.me/download/aerial-standard.apk";
-const APK_ASSET_NAME = "aerial-standard.apk";
 const PLATFORM_TOOLS_URL = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
 const ADB_CONNECT_TIMEOUT_MS = 20_000;
 const ADB_INSTALL_TIMEOUT_MS = 180_000;
@@ -35,16 +46,6 @@ export interface AdbInfo {
   hint: string;
 }
 
-export interface AerialReleaseInfo {
-  tag: string;
-  apkName: string;
-  apkUrl: string;
-  sizeBytes: number;
-  sha256: string | null;
-  publishedAt: string | null;
-  channel: "github" | "mirror" | "custom";
-}
-
 export interface TvDesktopTarget {
   deviceId: string;
   name: string;
@@ -53,9 +54,12 @@ export interface TvDesktopTarget {
   kind: "casthub" | "dlna";
 }
 
-/** 电视上已安装的 Aerial 版本（只有显式请求 deviceId 时才查询，避免每次开面板都跑 adb）。 */
+/** 电视上已安装的目标应用版本（只有显式请求 deviceId 时才查询，避免每次开面板都跑 adb）。 */
 export interface TvDesktopInstalledInfo {
   deviceId: string;
+  appId: string;
+  variantId: string;
+  packageName: string;
   installed: boolean;
   version: string | null;
   /** 最新发布版比已装版本新时为 true；无法比较（镜像渠道 / 非数字版本）时恒为 false。 */
@@ -63,15 +67,35 @@ export interface TvDesktopInstalledInfo {
   error: string | null;
 }
 
+/** 面板用的应用摘要（不含内部字段）。 */
+export interface TvDesktopAppSummary {
+  id: string;
+  name: string;
+  vendor: string;
+  description: string;
+  homepage: string;
+  installKind: "launcher" | "app";
+  defaultVariant: string;
+  notice: string;
+  variants: ReturnType<typeof variantSummary>[];
+}
+
 export interface TvDesktopInfo {
   adb: AdbInfo;
-  release: AerialReleaseInfo | null;
+  release: TvAppReleaseInfo | null;
   releaseError: string | null;
   targets: TvDesktopTarget[];
   cacheDir: string;
   busy: boolean;
+  /** 当前选中变体的包名（旧字段，等价于 packageName）。 */
   packageName: string;
   platformToolsUrl: string;
+  apps: TvDesktopAppSummary[];
+  activeAppId: string;
+  appName: string;
+  variantId: string;
+  variantName: string;
+  installKind: "launcher" | "app";
   installed?: TvDesktopInstalledInfo;
 }
 
@@ -85,7 +109,9 @@ export interface TvDesktopStep {
 }
 
 export interface TvDesktopVerification {
+  /** launcher：是否接管默认桌面；app：是否已安装并可见。 */
   homeLauncher: boolean;
+  /** launcher：无障碍守护是否启用；app：恒为 false（不适用）。 */
   accessibility: boolean;
   focus: boolean;
   detail: string;
@@ -97,7 +123,10 @@ export interface TvDesktopResult {
   message: string;
   steps: TvDesktopStep[];
   verification: TvDesktopVerification | null;
-  release: AerialReleaseInfo | null;
+  release: TvAppReleaseInfo | null;
+  appId: string;
+  variantId: string;
+  packageName: string;
 }
 
 interface ToolResult {
@@ -238,7 +267,7 @@ export interface ResolveAdbResult {
   source: AdbSource;
 }
 
-/** adb 解析顺序：CASTHUB_ADB_PATH/ADB_PATH > %LOCALAPPDATA%\CastHub\platform-tools > PATH。 */
+/** adb 解析顺序：CASTHUB_ADB_PATH/ADB_PATH > %LOCALAPPDATA%\\CastHub\\platform-tools > PATH。 */
 export function resolveAdbPath(): ResolveAdbResult {
   const fromEnv = envValue("CASTHUB_ADB_PATH") || envValue("ADB_PATH");
   if (fromEnv) {
@@ -297,51 +326,29 @@ export async function detectAdb(): Promise<AdbInfo> {
   };
 }
 
-function parseSha256Digest(digest: unknown): string | null {
-  if (typeof digest !== "string") return null;
-  const match = digest.match(/^sha256:([0-9a-f]{64})$/i);
-  return match ? match[1].toLowerCase() : null;
+/** Aerial 标准版（默认应用）的定义，供旧调用方复用。 */
+function aerialApp(): TvAppDefinition {
+  const app = findTvApp("aerial");
+  if (!app) throw new Error("电视应用目录缺少 aerial");
+  return app;
 }
 
-/** 从 GitHub release JSON 里挑出标准版 APK；digest 字段缺失时返回 null（安装前会跳过校验并提示）。 */
-export function parseLatestRelease(payload: unknown): AerialReleaseInfo | null {
-  if (!payload || typeof payload !== "object") return null;
-  const data = payload as Record<string, unknown>;
-  const assets = Array.isArray(data.assets) ? data.assets : [];
-  for (const item of assets) {
-    if (!item || typeof item !== "object") continue;
-    const asset = item as Record<string, unknown>;
-    if (asset.name !== APK_ASSET_NAME) continue;
-    const url = typeof asset.browser_download_url === "string" ? asset.browser_download_url : "";
-    if (!/^https:\/\//i.test(url)) continue;
-    return {
-      tag: typeof data.tag_name === "string" ? data.tag_name : "latest",
-      apkName: APK_ASSET_NAME,
-      apkUrl: url,
-      sizeBytes: typeof asset.size === "number" ? asset.size : 0,
-      sha256: parseSha256Digest(asset.digest),
-      publishedAt: typeof data.published_at === "string" ? data.published_at : null,
-      channel: "github"
-    };
-  }
-  return null;
+function defaultVariantOf(app: TvAppDefinition): TvAppVariant {
+  const variant = findTvVariant(app, app.defaultVariant);
+  if (!variant) throw new Error("电视应用目录缺少变体 " + app.defaultVariant);
+  return variant;
 }
 
-export function parseCustomRelease(payload: unknown): AerialReleaseInfo | null {
-  if (!payload || typeof payload !== "object") return null;
-  const data = payload as Record<string, unknown>;
-  const url = typeof data.apkUrl === "string" ? data.apkUrl : "";
-  if (!url) return null;
-  const sha256 = typeof data.sha256 === "string" && /^[0-9a-f]{64}$/i.test(data.sha256) ? data.sha256.toLowerCase() : null;
-  return {
-    tag: typeof data.tag === "string" ? data.tag : "custom",
-    apkName: typeof data.apkName === "string" ? data.apkName : APK_ASSET_NAME,
-    apkUrl: url,
-    sizeBytes: typeof data.sizeBytes === "number" ? data.sizeBytes : 0,
-    sha256,
-    publishedAt: typeof data.publishedAt === "string" ? data.publishedAt : null,
-    channel: "custom"
-  };
+/** 旧导出：按 Aerial 标准版解析 GitHub 发布 JSON。 */
+export function parseLatestRelease(payload: unknown): TvAppReleaseInfo | null {
+  const app = aerialApp();
+  return parseAppRelease(app, defaultVariantOf(app), payload);
+}
+
+/** 旧导出：按 Aerial 标准版解析本地注入的发布 JSON。 */
+export function parseCustomRelease(payload: unknown): TvAppReleaseInfo | null {
+  const app = aerialApp();
+  return parseAppCustomRelease(app, defaultVariantOf(app), payload);
 }
 
 async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
@@ -353,42 +360,50 @@ async function fetchJson(url: string, timeoutMs: number): Promise<unknown> {
   return (await response.json()) as unknown;
 }
 
-/** 发布信息缓存，避免每次打开面板都打 GitHub API。 */
-let releaseCache: { at: number; value: AerialReleaseInfo | null; error: string | null } | null = null;
+/** 发布信息缓存（按 appId:variantId 分槽），避免每次打开面板都打 GitHub API。 */
+const releaseCache = new Map<string, { at: number; value: TvAppReleaseInfo | null; error: string | null }>();
 
 export function clearReleaseCache(): void {
-  releaseCache = null;
+  releaseCache.clear();
 }
 
-export async function fetchLatestRelease(options?: { force?: boolean }): Promise<{
-  release: AerialReleaseInfo | null;
-  error: string | null;
-}> {
-  if (!options?.force && releaseCache && Date.now() - releaseCache.at < RELEASE_CACHE_MS) {
-    return { release: releaseCache.value, error: releaseCache.error };
+/** 取指定应用变体的最新发布信息；Aerial 失败时回退官网直链，其他应用没有兜底。 */
+export async function fetchAppRelease(
+  app: TvAppDefinition,
+  variant: TvAppVariant,
+  options?: { force?: boolean }
+): Promise<{ release: TvAppReleaseInfo | null; error: string | null }> {
+  const key = app.id + ":" + variant.id;
+  const cached = releaseCache.get(key);
+  if (!options?.force && cached && Date.now() - cached.at < RELEASE_CACHE_MS) {
+    return { release: cached.value, error: cached.error };
   }
-  const customPath = envValue("AERIAL_RELEASE_JSON");
-  let release: AerialReleaseInfo | null = null;
+  const customPath = envValue(releaseJsonEnvName(app));
+  let release: TvAppReleaseInfo | null = null;
   let error: string | null = null;
   if (customPath) {
     try {
-      release = parseCustomRelease(JSON.parse(fs.readFileSync(customPath, "utf8")));
-      if (!release) error = "AERIAL_RELEASE_JSON 缺少 apkUrl";
+      release = parseAppCustomRelease(app, variant, JSON.parse(fs.readFileSync(customPath, "utf8")));
+      if (!release) error = releaseJsonEnvName(app) + " 缺少 apkUrl（或 variant 不匹配）";
     } catch (caught) {
-      error = "读取 AERIAL_RELEASE_JSON 失败: " + errorMessage(caught);
+      error = "读取 " + releaseJsonEnvName(app) + " 失败: " + errorMessage(caught);
     }
   } else {
     try {
-      release = parseLatestRelease(await fetchJson(GITHUB_LATEST_RELEASE, RELEASE_FETCH_TIMEOUT_MS));
-      if (!release) error = "GitHub 发布页里没有找到 " + APK_ASSET_NAME;
+      release = parseAppRelease(app, variant, await fetchJson(releasesApiUrl(app), RELEASE_FETCH_TIMEOUT_MS));
+      if (!release) error = "GitHub 发布页里没有找到 " + variant.assetName.replace("{version}", "*");
     } catch (caught) {
-      error = "查询 Aerial 最新版本失败: " + errorMessage(caught);
+      error = "查询 " + app.name + " 最新版本失败: " + errorMessage(caught);
     }
-    if (!release) {
+    if (!release && app.id === "aerial" && variant.id === app.defaultVariant) {
       // 兜底：官网直链，无法拿到版本号与校验和
       release = {
+        appId: app.id,
+        variantId: variant.id,
+        packageName: variant.packageName,
         tag: "latest",
-        apkName: APK_ASSET_NAME,
+        version: "",
+        apkName: variant.assetName,
         apkUrl: MIRROR_APK_URL,
         sizeBytes: 0,
         sha256: null,
@@ -397,8 +412,17 @@ export async function fetchLatestRelease(options?: { force?: boolean }): Promise
       };
     }
   }
-  releaseCache = { at: Date.now(), value: release, error };
+  releaseCache.set(key, { at: Date.now(), value: release, error });
   return { release, error };
+}
+
+/** 旧导出：Aerial 标准版的最新发布信息。 */
+export async function fetchLatestRelease(options?: { force?: boolean }): Promise<{
+  release: TvAppReleaseInfo | null;
+  error: string | null;
+}> {
+  const app = aerialApp();
+  return fetchAppRelease(app, defaultVariantOf(app), options);
 }
 
 export function sha256File(filePath: string): Promise<string> {
@@ -424,7 +448,7 @@ function assertRemoteUrl(url: string): void {
 
 /** 下载 APK 到缓存目录；已存在且校验通过则直接复用。返回本地路径与实际 sha256。 */
 export async function downloadApk(
-  release: AerialReleaseInfo,
+  release: TvAppReleaseInfo,
   cacheDir: string,
   onProgress?: (percent: number) => void
 ): Promise<{ filePath: string; sha256: string; cached: boolean }> {
@@ -433,7 +457,8 @@ export async function downloadApk(
   const safeTag = release.tag.replace(/[^0-9A-Za-z._-]/g, "_").slice(0, 40) || "latest";
   // 同一 tag 可能对应不同下载地址（尤其 custom），缓存名必须带上 URL 摘要，避免复用旧包。
   const urlKey = createHash("sha256").update(release.apkUrl).digest("hex").slice(0, 16);
-  const target = path.join(cacheDir, "aerial-" + safeTag + "-" + urlKey + ".apk");
+  const prefix = release.appId === "aerial" ? "aerial" : release.appId + "-" + release.variantId;
+  const target = path.join(cacheDir, prefix + "-" + safeTag + "-" + urlKey + ".apk");
 
   if (fs.existsSync(target)) {
     if (release.sha256) {
@@ -563,7 +588,7 @@ export function explainAdbFailure(output: string): string | null {
     return "电视拒绝安装：请在电视的开发者选项里允许「USB 安装」/关闭「安装未知来源限制」后重试。";
   }
   if (text.includes("install_failed_insufficient_storage")) return "电视存储空间不足，无法安装 APK。";
-  if (text.includes("install_failed_update_incompatible")) return "电视上已装同名但签名不同的 Aerial，请先卸载再装。";
+  if (text.includes("install_failed_update_incompatible")) return "电视上已装同名但签名不同的应用，请先卸载再装。";
   if (text.includes("cannot connect") || text.includes("failed to connect") || text.includes("unable to connect")) {
     return "连不上电视的 adb 端口。请确认电视与电脑在同一局域网、已在电视上开启「网络调试/ADB 调试」，端口 5555 未被占用。";
   }
@@ -571,7 +596,17 @@ export function explainAdbFailure(output: string): string | null {
   return null;
 }
 
-async function installSteps(ctx: ExecContext, serial: string, apkPath: string): Promise<{ ok: boolean; failure: string | null }> {
+/** Aerial 守护 APK 包名（由正式版内部引导安装，这里只用于提示/授权）。 */
+const AERIAL_PACKAGE = "app.orchard.tv";
+const AERIAL_REVIVAL_LISTENER = "app.orchard.tv/app.orchard.tv.guard.RevivalListener";
+const AERIAL_HOME_GUARD_SERVICE = "app.orchard.tv/.guard.HomeGuardService";
+
+/** 桌面类应用（Aerial）：安装 + 官方脚本里的授权步骤，尽量让守护生效。 */
+async function launcherInstallSteps(
+  ctx: ExecContext,
+  serial: string,
+  apkPath: string
+): Promise<{ ok: boolean; failure: string | null }> {
   const required: StepSpec[] = [
     { key: "connect", title: "连接电视 adb", args: ["connect", serial], required: true, timeoutMs: ADB_CONNECT_TIMEOUT_MS, check: (r) => /connected to|already connected/i.test(r.stdout + r.stderr) },
     { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) },
@@ -605,7 +640,35 @@ async function installSteps(ctx: ExecContext, serial: string, apkPath: string): 
   return { ok: true, failure: null };
 }
 
-async function verifyInstall(ctx: ExecContext, serial: string): Promise<TvDesktopVerification> {
+/** 普通应用（红果短剧）：只做连接、安装、启动与预编译，不动桌面/无障碍/AppOps。 */
+async function appInstallSteps(
+  ctx: ExecContext,
+  serial: string,
+  apkPath: string,
+  variant: TvAppVariant,
+  appName: string
+): Promise<{ ok: boolean; failure: string | null }> {
+  const required: StepSpec[] = [
+    { key: "connect", title: "连接电视 adb", args: ["connect", serial], required: true, timeoutMs: ADB_CONNECT_TIMEOUT_MS, check: (r) => /connected to|already connected/i.test(r.stdout + r.stderr) },
+    { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) },
+    { key: "install", title: "安装 " + appName + " APK", args: ["-s", serial, "install", "-r", apkPath], required: true, timeoutMs: ADB_INSTALL_TIMEOUT_MS, check: (r) => stepOk(r) && /success/i.test(r.stdout + r.stderr) }
+  ];
+  for (const spec of required) {
+    const outcome = await runStep(ctx, spec);
+    if (!outcome.ok) return { ok: false, failure: explainAdbFailure(outcome.output) ?? spec.title + " 失败" };
+  }
+
+  const optional: StepSpec[] = [
+    { key: "launch", title: "启动 " + appName, args: ["-s", serial, "shell", "am", "start", "-n", variant.activity], required: false },
+    { key: "compile", title: "预编译加速（首次启动更快）", args: ["-s", serial, "shell", "cmd", "package", "compile", "-m", "speed", "-f", variant.packageName], required: false, timeoutMs: 120_000 }
+  ];
+  for (const spec of optional) {
+    await runStep(ctx, spec);
+  }
+  return { ok: true, failure: null };
+}
+
+async function verifyLauncherInstall(ctx: ExecContext, serial: string): Promise<TvDesktopVerification> {
   const launcher = await runTool(ctx.adbPath, ["-s", serial, "shell", "cmd", "package", "resolve-activity", "--brief", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.HOME"], ADB_STEP_TIMEOUT_MS);
   const accessibility = await runTool(ctx.adbPath, ["-s", serial, "shell", "settings", "get", "secure", "enabled_accessibility_services"], ADB_STEP_TIMEOUT_MS);
   const window = await runTool(ctx.adbPath, ["-s", serial, "shell", "dumpsys", "window"], ADB_STEP_TIMEOUT_MS);
@@ -624,6 +687,31 @@ async function verifyInstall(ctx: ExecContext, serial: string): Promise<TvDeskto
   return { homeLauncher, accessibility: accessibilityOk, focus, detail };
 }
 
+/** `pm list packages` 输出里是否精确包含该包名（避免 rocks.aston.hongguotv 命中 .mpv 变体）。 */
+function hasPackage(output: string, packageName: string): boolean {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .some((line) => line === "package:" + packageName);
+}
+
+/** 普通应用安装后的校验：包是否在列表里 + 前台是否切到它。 */
+async function verifyAppInstall(ctx: ExecContext, serial: string, variant: TvAppVariant): Promise<TvDesktopVerification> {
+  const packages = await runTool(ctx.adbPath, ["-s", serial, "shell", "pm", "list", "packages", variant.packageName], ADB_STEP_TIMEOUT_MS);
+  const window = await runTool(ctx.adbPath, ["-s", serial, "shell", "dumpsys", "window"], ADB_STEP_TIMEOUT_MS);
+  const installed = hasPackage(packages.stdout + packages.stderr, variant.packageName);
+  const focusLine = window.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.includes("mCurrentFocus"))
+    .join(" ");
+  const focus = focusLine.includes(variant.packageName);
+  const detail = [
+    "已安装: " + (installed ? variant.packageName : "未找到 " + variant.packageName),
+    "前台窗口: " + (focus ? variant.packageName : focusLine ? truncate(focusLine) : "未知")
+  ].join("\n");
+  return { homeLauncher: installed, accessibility: false, focus, detail };
+}
+
 function parseAccessibilityList(text: string): string[] {
   return text
     .trim()
@@ -632,8 +720,8 @@ function parseAccessibilityList(text: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-/** 最小还原：卸载 + 解除默认桌面角色 + 撤销权限/AppOps + 清理无障碍项。 */
-async function uninstallSteps(ctx: ExecContext, serial: string): Promise<{ ok: boolean; failure: string | null }> {
+/** Aerial 最小还原：卸载 + 解除默认桌面角色 + 撤销权限/AppOps + 清理无障碍项。 */
+async function launcherUninstallSteps(ctx: ExecContext, serial: string): Promise<{ ok: boolean; failure: string | null }> {
   const pre: StepSpec[] = [
     { key: "connect", title: "连接电视 adb", args: ["connect", serial], required: true, timeoutMs: ADB_CONNECT_TIMEOUT_MS, check: (r) => /connected to|already connected/i.test(r.stdout + r.stderr) },
     { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) }
@@ -679,7 +767,34 @@ async function uninstallSteps(ctx: ExecContext, serial: string): Promise<{ ok: b
   return { ok: true, failure: null };
 }
 
-async function verifyUninstall(ctx: ExecContext, serial: string): Promise<TvDesktopVerification> {
+/** 普通应用卸载：连接 + 停止 + 卸载，不碰桌面与无障碍。 */
+async function appUninstallSteps(
+  ctx: ExecContext,
+  serial: string,
+  variant: TvAppVariant,
+  appName: string
+): Promise<{ ok: boolean; failure: string | null }> {
+  const pre: StepSpec[] = [
+    { key: "connect", title: "连接电视 adb", args: ["connect", serial], required: true, timeoutMs: ADB_CONNECT_TIMEOUT_MS, check: (r) => /connected to|already connected/i.test(r.stdout + r.stderr) },
+    { key: "state", title: "确认调试授权", args: ["-s", serial, "get-state"], required: true, check: (r) => stepOk(r) && /device/.test(r.stdout) && !/unauthorized|offline/i.test(r.stdout + r.stderr) }
+  ];
+  for (const spec of pre) {
+    const outcome = await runStep(ctx, spec);
+    if (!outcome.ok) return { ok: false, failure: explainAdbFailure(outcome.output) ?? spec.title + " 失败" };
+  }
+
+  const steps: StepSpec[] = [
+    { key: "force-stop", title: "停止 " + appName, args: ["-s", serial, "shell", "am", "force-stop", variant.packageName], required: false },
+    { key: "uninstall", title: "卸载 " + appName, args: ["-s", serial, "uninstall", variant.packageName], required: true, check: (r) => stepOk(r) && /success/i.test(r.stdout + r.stderr) }
+  ];
+  for (const spec of steps) {
+    const outcome = await runStep(ctx, spec);
+    if (spec.required && !outcome.ok) return { ok: false, failure: explainAdbFailure(outcome.output) ?? spec.title + " 失败" };
+  }
+  return { ok: true, failure: null };
+}
+
+async function verifyLauncherUninstall(ctx: ExecContext, serial: string): Promise<TvDesktopVerification> {
   const packages = await runTool(ctx.adbPath, ["-s", serial, "shell", "pm", "list", "packages", AERIAL_PACKAGE], ADB_STEP_TIMEOUT_MS);
   const window = await runTool(ctx.adbPath, ["-s", serial, "shell", "dumpsys", "window"], ADB_STEP_TIMEOUT_MS);
   const stillInstalled = (packages.stdout + packages.stderr).includes("package:" + AERIAL_PACKAGE);
@@ -695,7 +810,23 @@ async function verifyUninstall(ctx: ExecContext, serial: string): Promise<TvDesk
   return { homeLauncher: !stillInstalled, accessibility: !focus, focus, detail };
 }
 
-/** 从 `dumpsys package` 输出里取 versionName（Aerial 正式版形如 2.11）。 */
+async function verifyAppUninstall(ctx: ExecContext, serial: string, variant: TvAppVariant): Promise<TvDesktopVerification> {
+  const packages = await runTool(ctx.adbPath, ["-s", serial, "shell", "pm", "list", "packages", variant.packageName], ADB_STEP_TIMEOUT_MS);
+  const window = await runTool(ctx.adbPath, ["-s", serial, "shell", "dumpsys", "window"], ADB_STEP_TIMEOUT_MS);
+  const stillInstalled = hasPackage(packages.stdout + packages.stderr, variant.packageName);
+  const focusLine = window.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.includes("mCurrentFocus"))
+    .join(" ");
+  const focus = focusLine.includes(variant.packageName);
+  const detail = [
+    "包 " + variant.packageName + ": " + (stillInstalled ? "仍然存在" : "已卸载"),
+    "前台窗口: " + (focus ? "仍是目标应用" : focusLine ? truncate(focusLine) : "未知")
+  ].join("\n");
+  return { homeLauncher: !stillInstalled, accessibility: !focus, focus, detail };
+}
+
+/** 从 `dumpsys package` 输出里取 versionName（Aerial 正式版形如 2.11，红果形如 0.2.182）。 */
 export function parseInstalledVersion(output: string): string | null {
   const match = output.match(/versionName=([0-9][0-9A-Za-z.\-_]*)/);
   return match ? match[1] : null;
@@ -722,9 +853,13 @@ export function compareVersions(a: string | null, b: string | null): number | nu
   return 0;
 }
 
-/** 查询电视上已装的 Aerial 版本；未安装返回 installed=false。 */
-async function queryInstalledVersion(adbPath: string, serial: string): Promise<{ installed: boolean; version: string | null }> {
-  const result = await runTool(adbPath, ["-s", serial, "shell", "dumpsys", "package", AERIAL_PACKAGE], ADB_STEP_TIMEOUT_MS);
+/** 查询电视上已装的目标包版本；未安装返回 installed=false。 */
+async function queryInstalledVersion(
+  adbPath: string,
+  serial: string,
+  packageName: string
+): Promise<{ installed: boolean; version: string | null }> {
+  const result = await runTool(adbPath, ["-s", serial, "shell", "dumpsys", "package", packageName], ADB_STEP_TIMEOUT_MS);
   const text = result.stdout + result.stderr;
   if (/Unable to find package|Unknown package|not found/i.test(text)) return { installed: false, version: null };
   const version = parseInstalledVersion(text);
@@ -737,6 +872,16 @@ function targetOf(devices: readonly TvDesktopDeviceInput[], deviceId: string): T
   if (!target) throw new Error("设备不存在");
   if (!target.ip) throw new Error("无法从设备地址解析电视 IP");
   return target;
+}
+
+/** 解析请求里的应用/变体；缺省回退到 Aerial 标准版，非法值回退到该应用的默认变体。 */
+export function resolveTvAppSelection(
+  appId: string | null | undefined,
+  variantId: string | null | undefined
+): { app: TvAppDefinition; variant: TvAppVariant } {
+  const app = findTvApp(appId) ?? aerialApp();
+  const variant = findTvVariant(app, variantId) ?? defaultVariantOf(app);
+  return { app, variant };
 }
 
 export interface TvDesktopServiceOptions {
@@ -759,13 +904,17 @@ export class TvDesktopService {
 
   /**
    * 读取面板信息。`options.force` 绕过 10 分钟发布信息缓存（面板「刷新」用）；
-   * `options.deviceId` 会额外查询该电视上已装的 Aerial 版本并判断是否有更新。
+   * `options.deviceId` 会额外查询该电视上已装的应用版本并判断是否有更新。
    */
   async info(
     devices: readonly TvDesktopDeviceInput[],
-    options?: { force?: boolean; deviceId?: string }
+    options?: { force?: boolean; deviceId?: string; appId?: string; variantId?: string }
   ): Promise<TvDesktopInfo> {
-    const [adb, releaseResult] = await Promise.all([detectAdb(), fetchLatestRelease({ force: options?.force })]);
+    const { app, variant } = resolveTvAppSelection(options?.appId, options?.variantId);
+    const [adb, releaseResult] = await Promise.all([
+      detectAdb(),
+      fetchAppRelease(app, variant, { force: options?.force })
+    ]);
     const info: TvDesktopInfo = {
       adb,
       release: releaseResult.release,
@@ -773,11 +922,27 @@ export class TvDesktopService {
       targets: listTargets(devices),
       cacheDir: this.cacheDir,
       busy: this.busy,
-      packageName: AERIAL_PACKAGE,
-      platformToolsUrl: PLATFORM_TOOLS_URL
+      packageName: variant.packageName,
+      platformToolsUrl: PLATFORM_TOOLS_URL,
+      apps: TV_APPS.map((item) => ({
+        id: item.id,
+        name: item.name,
+        vendor: item.vendor,
+        description: item.description,
+        homepage: item.homepage,
+        installKind: item.installKind,
+        defaultVariant: item.defaultVariant,
+        notice: item.notice,
+        variants: item.variants.map(variantSummary)
+      })),
+      activeAppId: app.id,
+      appName: app.name,
+      variantId: variant.id,
+      variantName: variant.name,
+      installKind: app.installKind
     };
     if (options?.deviceId) {
-      info.installed = await this.installedInfo(devices, options.deviceId, adb, releaseResult.release);
+      info.installed = await this.installedInfo(devices, options.deviceId, adb, releaseResult.release, app, variant);
     }
     return info;
   }
@@ -787,9 +952,19 @@ export class TvDesktopService {
     devices: readonly TvDesktopDeviceInput[],
     deviceId: string,
     adb: AdbInfo,
-    release: AerialReleaseInfo | null
+    release: TvAppReleaseInfo | null,
+    app: TvAppDefinition,
+    variant: TvAppVariant
   ): Promise<TvDesktopInstalledInfo> {
-    const empty = { deviceId, installed: false, version: null, updateAvailable: false };
+    const empty = {
+      deviceId,
+      appId: app.id,
+      variantId: variant.id,
+      packageName: variant.packageName,
+      installed: false,
+      version: null,
+      updateAvailable: false
+    };
     if (!adb.available || !adb.path) return { ...empty, error: "adb 不可用，无法读取电视上已装版本" };
     let target: TvDesktopTarget;
     try {
@@ -801,11 +976,11 @@ export class TvDesktopService {
     try {
       // 只连不断开：后续安装/还原复用同一个 adb 连接。
       await runTool(adb.path, ["connect", serial], ADB_CONNECT_TIMEOUT_MS);
-      const current = await queryInstalledVersion(adb.path, serial);
-      const latest = release && release.channel !== "mirror" ? release.tag : null;
+      const current = await queryInstalledVersion(adb.path, serial, variant.packageName);
+      const latest = release && release.channel !== "mirror" ? release.version || release.tag : null;
       const diff = current.installed ? compareVersions(latest, current.version) : null;
       return {
-        deviceId,
+        ...empty,
         installed: current.installed,
         version: current.version,
         updateAvailable: diff !== null && diff > 0,
@@ -828,17 +1003,35 @@ export class TvDesktopService {
   async install(
     devices: readonly TvDesktopDeviceInput[],
     deviceId: string,
-    options?: { apkUrl?: string; allowUnverified?: boolean; onProgress?: (percent: number) => void }
+    options?: {
+      apkUrl?: string;
+      allowUnverified?: boolean;
+      onProgress?: (percent: number) => void;
+      appId?: string;
+      variantId?: string;
+    }
   ): Promise<TvDesktopResult> {
-    this.begin("安装");
+    const { app, variant } = resolveTvAppSelection(options?.appId, options?.variantId);
+    this.begin(app.installKind === "launcher" ? "安装" : "安装" + app.name);
     const steps: TvDesktopStep[] = [];
+    const fail = (message: string, release: TvAppReleaseInfo | null): TvDesktopResult => ({
+      action: "install",
+      ok: false,
+      message,
+      steps,
+      verification: null,
+      release,
+      appId: app.id,
+      variantId: variant.id,
+      packageName: variant.packageName
+    });
     try {
       // 自定义地址先校验再碰 adb：地址非法时不该在电视上留下任何动作。
       let customUrl: string | null = null;
       if (options?.apkUrl) {
         const url = options.apkUrl.trim();
         if (!/^https:\/\//i.test(url)) {
-          return { action: "install", ok: false, message: "自定义 APK 地址必须是 https:// 链接", steps, verification: null, release: null };
+          return fail("自定义 APK 地址必须是 https:// 链接", null);
         }
         customUrl = url;
       }
@@ -846,27 +1039,32 @@ export class TvDesktopService {
       const target = targetOf(devices, deviceId);
       const adb = await detectAdb();
       if (!adb.available || !adb.path) {
-        return { action: "install", ok: false, message: adb.hint, steps, verification: null, release: null };
+        return fail(adb.hint, null);
       }
 
-      let release: AerialReleaseInfo | null;
+      let release: TvAppReleaseInfo | null;
       if (customUrl) {
-        release = { tag: "custom", apkName: APK_ASSET_NAME, apkUrl: customUrl, sizeBytes: 0, sha256: null, publishedAt: null, channel: "custom" };
+        release = {
+          appId: app.id,
+          variantId: variant.id,
+          packageName: variant.packageName,
+          tag: "custom",
+          version: "",
+          apkName: variant.assetName.replace("{version}", "custom"),
+          apkUrl: customUrl,
+          sizeBytes: 0,
+          sha256: null,
+          publishedAt: null,
+          channel: "custom"
+        };
       } else {
-        release = (await fetchLatestRelease()).release;
+        release = (await fetchAppRelease(app, variant)).release;
       }
       if (!release) {
-        return { action: "install", ok: false, message: "无法获取 Aerial 安装包地址", steps, verification: null, release: null };
+        return fail("无法获取 " + app.name + " 安装包地址", null);
       }
       if (!release.sha256 && !options?.allowUnverified) {
-        return {
-          action: "install",
-          ok: false,
-          message: "Aerial 安装包未提供 SHA-256，无法验证完整性；请确认来源可信后重试",
-          steps,
-          verification: null,
-          release
-        };
+        return fail(app.name + " 安装包未提供 SHA-256，无法验证完整性；请确认来源可信后重试", release);
       }
 
       let apkPath: string;
@@ -883,49 +1081,108 @@ export class TvDesktopService {
         });
       } catch (error) {
         steps.push({ key: "download", title: "下载安装包", command: release.apkUrl, ok: false, required: true, output: errorMessage(error) });
-        return { action: "install", ok: false, message: errorMessage(error), steps, verification: null, release };
+        return fail(errorMessage(error), release);
       }
 
       const ctx: ExecContext = { adbPath: adb.path, steps };
       const serial = serialFor(target.ip as string);
-      const outcome = await installSteps(ctx, serial, apkPath);
+      const outcome =
+        app.installKind === "launcher"
+          ? await launcherInstallSteps(ctx, serial, apkPath)
+          : await appInstallSteps(ctx, serial, apkPath, variant, app.name);
       if (!outcome.ok) {
-        return { action: "install", ok: false, message: outcome.failure ?? "安装失败", steps, verification: null, release };
+        return fail(outcome.failure ?? "安装失败", release);
       }
-      const verification = await verifyInstall(ctx, serial);
-      const message = verification.homeLauncher
-        ? "Aerial 已安装并接管默认桌面"
-        : "Aerial 已安装，但未成为默认桌面。请在电视「设置 → 应用 → 默认应用」里把桌面设为 Aerial，或按 Home 键时选择 Aerial。";
-      return { action: "install", ok: true, message, steps, verification, release };
+      let verification: TvDesktopVerification;
+      let message: string;
+      if (app.installKind === "launcher") {
+        verification = await verifyLauncherInstall(ctx, serial);
+        message = verification.homeLauncher
+          ? "Aerial 已安装并接管默认桌面"
+          : "Aerial 已安装，但未成为默认桌面。请在电视「设置 → 应用 → 默认应用」里把桌面设为 Aerial，或按 Home 键时选择 Aerial。";
+      } else {
+        verification = await verifyAppInstall(ctx, serial, variant);
+        message = verification.homeLauncher
+          ? app.name + " 已安装完成，可在电视应用列表里打开"
+          : app.name + " 安装命令已执行，但没在包列表里查到 " + variant.packageName + "，请在电视上确认安装结果。";
+      }
+      return {
+        action: "install",
+        ok: true,
+        message,
+        steps,
+        verification,
+        release,
+        appId: app.id,
+        variantId: variant.id,
+        packageName: variant.packageName
+      };
     } catch (error) {
-      return { action: "install", ok: false, message: errorMessage(error), steps, verification: null, release: null };
+      return fail(errorMessage(error), null);
     } finally {
       this.end();
     }
   }
 
-  async uninstall(devices: readonly TvDesktopDeviceInput[], deviceId: string): Promise<TvDesktopResult> {
-    this.begin("还原");
+  async uninstall(
+    devices: readonly TvDesktopDeviceInput[],
+    deviceId: string,
+    options?: { appId?: string; variantId?: string }
+  ): Promise<TvDesktopResult> {
+    const { app, variant } = resolveTvAppSelection(options?.appId, options?.variantId);
+    this.begin(app.installKind === "launcher" ? "还原" : "卸载" + app.name);
     const steps: TvDesktopStep[] = [];
+    const fail = (message: string): TvDesktopResult => ({
+      action: "uninstall",
+      ok: false,
+      message,
+      steps,
+      verification: null,
+      release: null,
+      appId: app.id,
+      variantId: variant.id,
+      packageName: variant.packageName
+    });
     try {
       const target = targetOf(devices, deviceId);
       const adb = await detectAdb();
       if (!adb.available || !adb.path) {
-        return { action: "uninstall", ok: false, message: adb.hint, steps, verification: null, release: null };
+        return fail(adb.hint);
       }
       const ctx: ExecContext = { adbPath: adb.path, steps };
       const serial = serialFor(target.ip as string);
-      const outcome = await uninstallSteps(ctx, serial);
+      const outcome =
+        app.installKind === "launcher"
+          ? await launcherUninstallSteps(ctx, serial)
+          : await appUninstallSteps(ctx, serial, variant, app.name);
       if (!outcome.ok) {
-        return { action: "uninstall", ok: false, message: outcome.failure ?? "还原失败", steps, verification: null, release: null };
+        return fail(outcome.failure ?? "卸载失败");
       }
-      const verification = await verifyUninstall(ctx, serial);
-      const message = verification.homeLauncher
-        ? "Aerial 已卸载，电视会回到原厂桌面"
-        : "已执行还原命令，但 Aerial 仍存在。海信/TCL/小米等品牌有额外设置，请用官方 restore.sh 处理。";
-      return { action: "uninstall", ok: true, message, steps, verification, release: null };
+      const verification =
+        app.installKind === "launcher"
+          ? await verifyLauncherUninstall(ctx, serial)
+          : await verifyAppUninstall(ctx, serial, variant);
+      const message =
+        app.installKind === "launcher"
+          ? verification.homeLauncher
+            ? "Aerial 已卸载，电视会回到原厂桌面"
+            : "已执行还原命令，但 Aerial 仍存在。海信/TCL/小米等品牌有额外设置，请用官方 restore.sh 处理。"
+          : verification.homeLauncher
+            ? app.name + " 已卸载"
+            : app.name + " 卸载命令已执行，但电视上仍能查到 " + variant.packageName + "，请手动确认。";
+      return {
+        action: "uninstall",
+        ok: true,
+        message,
+        steps,
+        verification,
+        release: null,
+        appId: app.id,
+        variantId: variant.id,
+        packageName: variant.packageName
+      };
     } catch (error) {
-      return { action: "uninstall", ok: false, message: errorMessage(error), steps, verification: null, release: null };
+      return fail(errorMessage(error));
     } finally {
       this.end();
     }

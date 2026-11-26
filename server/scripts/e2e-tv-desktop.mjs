@@ -16,6 +16,8 @@ const CONSOLE_TOKEN = "e2e-console-token-2024";
 const TV_TOKEN = "246810";
 const FAKE_ADB = path.join(SERVER_DIR, "scripts", "fake-adb.mjs");
 const AERIAL_PACKAGE = "app.orchard.tv";
+const HONGGUO_PACKAGE = "rocks.aston.hongguotv";
+const HONGGUO_MPV_PACKAGE = "rocks.aston.hongguotv.mpv";
 
 const children = [];
 let exiting = false;
@@ -194,6 +196,20 @@ function writeReleaseJson(file, apkPath, sha, tag = "e2e-1.0.0") {
   );
 }
 
+function writeHongguoRelease(file, apkPath, sha, options = {}) {
+  const payload = {
+    apkUrl: pathToFileURL(apkPath).href,
+    apkName: options.apkName ?? "hongguo-tv-0.2.182.apk",
+    tag: options.tag ?? "0.2.182",
+    sizeBytes: fs.statSync(apkPath).size,
+    sha256: sha,
+    publishedAt: "2026-11-25T12:21:17Z"
+  };
+  // 带上 variant 时只对该变体生效，用来验证变体过滤。
+  if (options.variant) payload.variant = options.variant;
+  fs.writeFileSync(file, JSON.stringify(payload, null, 2));
+}
+
 function readAdbCalls(logFile) {
   if (!fs.existsSync(logFile)) return [];
   return fs
@@ -227,6 +243,13 @@ async function main() {
   const dataDir = path.join(tempDir, "data-root");
   const apkPath = path.join(tempDir, "aerial-standard.apk");
   const releaseJson = path.join(tempDir, "release.json");
+  // 红果短剧：三个变体各一个假 APK，文件名要能命中 fake-adb 的包名推断前缀。
+  const hongguoApks = {
+    standard: path.join(tempDir, "hongguo-standard.apk"),
+    mpv: path.join(tempDir, "hongguo-mpv.apk"),
+    android5: path.join(tempDir, "hongguo-android5.apk")
+  };
+  const hongguoReleaseJson = path.join(tempDir, "hongguo-release.json");
   const modeFile = path.join(tempDir, "adb-mode.txt");
   const adbLog = path.join(tempDir, "adb-calls.log");
   const adbState = path.join(tempDir, "adb-state.json");
@@ -236,6 +259,10 @@ async function main() {
   fs.writeFileSync(apkPath, apkBytes);
   const apkSha = sha256(apkBytes);
   writeReleaseJson(releaseJson, apkPath, apkSha);
+  const hongguoBytes = Buffer.concat([Buffer.from("PK-fake-hongguo-apk-"), Buffer.alloc(48 * 1024, 0x5b)]);
+  for (const file of Object.values(hongguoApks)) fs.writeFileSync(file, hongguoBytes);
+  const hongguoSha = sha256(hongguoBytes);
+  writeHongguoRelease(hongguoReleaseJson, hongguoApks.standard, hongguoSha);
   fs.writeFileSync(modeFile, "ok");
   fs.writeFileSync(
     adbState,
@@ -244,14 +271,14 @@ async function main() {
   console.log("测试临时目录:", tempDir);
   console.log("测试 DATA_DIR:", dataDir);
 
-  console.log("\n[1/8] 启动 fake-tv ...");
+  console.log("\n[1/9] 启动 fake-tv ...");
   const fakeTv = startProcess("fake-tv", ["scripts/fake-tv.mjs"], {
     cwd: SERVER_DIR,
     env: { ...process.env, FAKE_TV_PORT: String(TV_PORT), FAKE_TV_TOKEN: TV_TOKEN, FAKE_TV_NAME: "Fake TV" }
   });
   await fakeTv.waitFor(/LISTENING/, 10000, "fake-tv 监听");
 
-  console.log("[2/8] 启动中枢（fake adb + 本地 APK）...");
+  console.log("[2/9] 启动中枢（fake adb + 本地 APK）...");
   const serverEnv = {
     ...process.env,
     PORT: String(HTTP_PORT),
@@ -262,6 +289,7 @@ async function main() {
     DATA_DIR: dataDir,
     CASTHUB_ADB_PATH: FAKE_ADB,
     AERIAL_RELEASE_JSON: releaseJson,
+    HONGGUO_RELEASE_JSON: hongguoReleaseJson,
     FAKE_ADB_MODE_FILE: modeFile,
     FAKE_ADB_LOG: adbLog,
     FAKE_ADB_STATE: adbState
@@ -270,7 +298,7 @@ async function main() {
   await server.waitFor(/CastHub 已启动/, 20000, "中枢启动");
   await waitForHttp(`http://127.0.0.1:${HTTP_PORT}/api/files?path=`);
 
-  console.log("[3/8] 连接控制台并读取电视助手信息 ...");
+  console.log("[3/9] 连接控制台并读取电视助手信息 ...");
   const consoleClient = await ConsoleClient.connect(`ws://127.0.0.1:${HTTP_PORT}/console?token=${CONSOLE_TOKEN}`);
   await consoleClient.waitFor((m) => m.type === "devices", 5000, "初始 devices");
   consoleClient.send({ type: "addDevice", address: `ws://127.0.0.1:${TV_PORT}`, token: TV_TOKEN });
@@ -293,7 +321,7 @@ async function main() {
   assert(info.busy === false, "电视助手初始不忙");
   assert(info.packageName === AERIAL_PACKAGE, "面板显示目标包名 " + info.packageName);
 
-  console.log("[4/8] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
+  console.log("[4/9] 已装版本与更新提示（A）+ 刷新绕过缓存（B）...");
   consoleClient.send({ type: "getDesktopInfo", deviceId: device.id });
   const installedInfo = await consoleClient.waitFor(
     (m) => m.type === "desktopInfo" && m.installed && m.installed.deviceId === device.id,
@@ -361,7 +389,7 @@ async function main() {
     "desktopInfo(恢复)"
   );
 
-  console.log("[5/8] 一键安装（成功路径）...");
+  console.log("[5/9] 一键安装（成功路径）...");
   const progressSeen = [];
   const collectProgress = setInterval(() => {
     for (const msg of consoleClient.messages) {
@@ -405,7 +433,7 @@ async function main() {
     "fake adb 处理了 version 探测"
   );
 
-  console.log("[6/8] 未授权路径（unauthorized）...");
+  console.log("[6/9] 未授权路径（unauthorized）...");
   fs.writeFileSync(modeFile, "unauthorized");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const unauthorizedResult = await consoleClient.waitFor(
@@ -417,7 +445,7 @@ async function main() {
   assert(stepByKey(unauthorizedResult, "state").ok === false, "get-state 步骤被判定失败");
   assert(!stepByKey(unauthorizedResult, "install"), "未授权时不继续执行 install");
 
-  console.log("[7/8] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
+  console.log("[7/9] 厂商拒绝（INSTALL_FAILED_USER_RESTRICTED）与自定义地址拒绝 ...");
   fs.writeFileSync(modeFile, "user-restricted");
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
   const restrictedResult = await consoleClient.waitFor(
@@ -439,7 +467,7 @@ async function main() {
   assert(customUrlResult.message.includes("https://"), "自定义地址仅允许 https: " + customUrlResult.message);
   assert(readAdbCalls(adbLog).length === callsBefore, "自定义地址被拒时没有执行 adb");
 
-  console.log("[8/8] 还原（最小步骤）与忙时拒绝 ...");
+  console.log("[8/9] 还原（最小步骤）与忙时拒绝 ...");
   fs.writeFileSync(modeFile, "slow");
   const slowMark = consoleClient.mark();
   consoleClient.send({ type: "installDesktop", deviceId: device.id });
@@ -477,6 +505,146 @@ async function main() {
   const stateAfter = JSON.parse(fs.readFileSync(adbState, "utf8"));
   assert(stateAfter.installed === false, "fake 设备状态已变为未安装");
   assert(stateAfter.accessibility === "com.example/.Svc", "无障碍列表已剔除 Aerial 守护项: " + stateAfter.accessibility);
+
+
+  console.log("[9/9] 红果短剧：应用目录、变体、安装/更新提示/共存/卸载 ...");
+  const appsMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", force: true });
+  const hongguoInfo = await consoleClient.waitForAfter(
+    appsMark,
+    (m) => m.type === "desktopInfo" && m.activeAppId === "hongguo",
+    20000,
+    "desktopInfo(hongguo)"
+  );
+  assert((hongguoInfo.apps ?? []).length === 2, "应用目录同时列出 Aerial 与红果: " + hongguoInfo.apps.map((a) => a.id).join(","));
+  assert(hongguoInfo.appName.includes("红果"), "面板应用名: " + hongguoInfo.appName);
+  assert(hongguoInfo.installKind === "app", "红果按普通应用安装（不接管桌面）");
+  assert(hongguoInfo.packageName === HONGGUO_PACKAGE, "默认变体包名 " + hongguoInfo.packageName);
+  const hongguoApp = hongguoInfo.apps.find((a) => a.id === "hongguo");
+  assert((hongguoApp.variants ?? []).length === 3, "红果提供三个变体: " + hongguoApp.variants.map((v) => v.id).join(","));
+  assert(hongguoApp.defaultVariant === "standard", "默认变体是标准版");
+  assert(hongguoInfo.release && hongguoInfo.release.tag === "0.2.182", "红果发布信息来自 HONGGUO_RELEASE_JSON: " + hongguoInfo.release.tag);
+  assert(hongguoInfo.release.sha256 === hongguoSha, "红果发布信息带 sha256 校验值");
+  assert(hongguoInfo.release.variantId === "standard", "发布信息绑定当前变体: " + hongguoInfo.release.variantId);
+
+  // 变体切换：mpv 版是独立包名。
+  const mpvMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", variantId: "mpv" });
+  const mpvInfo = await consoleClient.waitForAfter(
+    mpvMark,
+    (m) => m.type === "desktopInfo" && m.variantId === "mpv",
+    20000,
+    "desktopInfo(hongguo/mpv)"
+  );
+  assert(mpvInfo.packageName === HONGGUO_MPV_PACKAGE, "mpv 变体包名独立: " + mpvInfo.packageName);
+  assert(mpvInfo.variantName.includes("MPV"), "变体名: " + mpvInfo.variantName);
+
+  // 发布注入带 variant 时只对该变体生效，避免装错包。
+  writeHongguoRelease(hongguoReleaseJson, hongguoApks.mpv, hongguoSha, { variant: "mpv", apkName: "hongguo-tv-mpv-0.2.182.apk" });
+  const filteredMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", variantId: "standard", force: true });
+  const filteredInfo = await consoleClient.waitForAfter(
+    filteredMark,
+    (m) => m.type === "desktopInfo" && m.variantId === "standard" && m.release === null,
+    20000,
+    "desktopInfo(variant 过滤)"
+  );
+  assert(!!filteredInfo.releaseError && filteredInfo.releaseError.includes("variant"), "变体不匹配时不套用别的安装包: " + filteredInfo.releaseError);
+  writeHongguoRelease(hongguoReleaseJson, hongguoApks.standard, hongguoSha);
+
+  // 电视上已装 0.2.100、发布页是 0.2.182 → 提示可更新。
+  fs.writeFileSync(
+    adbState,
+    JSON.stringify({
+      packages: { [HONGGUO_PACKAGE]: { version: "0.2.100", versionCode: 100 } },
+      accessibility: "com.example/.Svc",
+      focus: HONGGUO_PACKAGE
+    })
+  );
+  const hongguoInstalledMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", deviceId: device.id, force: true });
+  const hongguoInstalled = await consoleClient.waitForAfter(
+    hongguoInstalledMark,
+    (m) => m.type === "desktopInfo" && m.installed && m.installed.appId === "hongguo",
+    20000,
+    "desktopInfo(hongguo installed)"
+  );
+  assert(hongguoInstalled.installed.installed === true, "读到电视上已装红果: v" + hongguoInstalled.installed.version);
+  assert(hongguoInstalled.installed.packageName === HONGGUO_PACKAGE, "已装查询用红果包名: " + hongguoInstalled.installed.packageName);
+  assert(hongguoInstalled.installed.updateAvailable === true, "红果版本更旧时提示更新: 0.2.100 → " + hongguoInstalled.release.tag);
+
+  // 标准版安装：只有下载/connect/state/install 必需步骤，不碰桌面与无障碍。
+  const hongguoInstallMark = consoleClient.mark();
+  consoleClient.send({ type: "installDesktop", deviceId: device.id, appId: "hongguo" });
+  const hongguoInstall = await consoleClient.waitForAfter(
+    hongguoInstallMark,
+    (m) => m.type === "desktopResult" && m.action === "install" && m.appId === "hongguo",
+    60000,
+    "desktopResult(hongguo install)"
+  );
+  assert(hongguoInstall.ok === true, "红果安装成功: " + hongguoInstall.message);
+  assert(hongguoInstall.packageName === HONGGUO_PACKAGE, "安装结果带包名: " + hongguoInstall.packageName);
+  assert(hongguoInstall.steps.filter((step) => step.required).length === 4, "红果必需步骤 4 条（下载 + connect + state + install）");
+  assert(hongguoInstall.steps.length === 6, "红果不跑桌面/无障碍授权步骤，共 " + hongguoInstall.steps.length + " 步（下载 + connect + state + install + 启动 + 预编译）");
+  assert(!stepByKey(hongguoInstall, "appops-overlay"), "红果安装不申请悬浮窗等桌面权限");
+  assert(!stepByKey(hongguoInstall, "remove-role"), "红果安装不涉及默认桌面角色");
+  const launchStep = stepByKey(hongguoInstall, "launch");
+  assert(
+    launchStep.command.includes("rocks.aston.hongguotv/.MainActivity"),
+    "安装后启动红果主界面: " + launchStep.command
+  );
+  const hongguoDownload = stepByKey(hongguoInstall, "download");
+  assert(hongguoDownload.output.includes(path.join("cache", "tv-desktop")), "红果 APK 也缓存到 cache/tv-desktop");
+  assert(hongguoInstall.verification.homeLauncher === true, "验收：红果已在包列表里");
+  assert(hongguoInstall.verification.accessibility === false, "验收：红果不涉及无障碍（恒 false）");
+  const hongguoState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(!!hongguoState.packages[HONGGUO_PACKAGE], "fake 设备上已记录红果包");
+  assert(!hongguoState.packages[AERIAL_PACKAGE], "安装红果没有顺带装上 Aerial");
+
+  const afterInstallMark = consoleClient.mark();
+  consoleClient.send({ type: "getDesktopInfo", appId: "hongguo", deviceId: device.id, force: true });
+  const hongguoAfter = await consoleClient.waitForAfter(
+    afterInstallMark,
+    (m) => m.type === "desktopInfo" && m.installed && m.installed.appId === "hongguo" && m.installed.version === "1.0.0",
+    20000,
+    "desktopInfo(hongguo 安装后)"
+  );
+  assert(hongguoAfter.installed.updateAvailable === false, "装完最新版后不再提示更新");
+
+  // MPV 变体是独立包名，可与标准版共存。
+  const mpvInstallMark = consoleClient.mark();
+  consoleClient.send({ type: "installDesktop", deviceId: device.id, appId: "hongguo", variantId: "mpv" });
+  const mpvInstall = await consoleClient.waitForAfter(
+    mpvInstallMark,
+    (m) => m.type === "desktopResult" && m.action === "install" && m.variantId === "mpv",
+    60000,
+    "desktopResult(hongguo mpv)"
+  );
+  assert(mpvInstall.ok === true, "MPV 版安装成功: " + mpvInstall.message);
+  assert(mpvInstall.packageName === HONGGUO_MPV_PACKAGE, "MPV 版包名: " + mpvInstall.packageName);
+  const coexistState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(
+    !!coexistState.packages[HONGGUO_PACKAGE] && !!coexistState.packages[HONGGUO_MPV_PACKAGE],
+    "标准版与 MPV 版共存: " + Object.keys(coexistState.packages).join(",")
+  );
+
+  // 卸载标准版不影响 MPV 版。
+  const hongguoUninstallMark = consoleClient.mark();
+  consoleClient.send({ type: "uninstallDesktop", deviceId: device.id, appId: "hongguo" });
+  const hongguoUninstall = await consoleClient.waitForAfter(
+    hongguoUninstallMark,
+    (m) => m.type === "desktopResult" && m.action === "uninstall" && m.appId === "hongguo",
+    60000,
+    "desktopResult(hongguo uninstall)"
+  );
+  assert(hongguoUninstall.ok === true, "红果卸载成功: " + hongguoUninstall.message);
+  assert(stepByKey(hongguoUninstall, "uninstall").command.includes(HONGGUO_PACKAGE), "卸载命令用红果包名");
+  assert(!stepByKey(hongguoUninstall, "remove-role"), "红果卸载不解除默认桌面角色");
+  assert(!stepByKey(hongguoUninstall, "accessibility-cleanup"), "红果卸载不清无障碍");
+  assert(hongguoUninstall.verification.homeLauncher === true, "验收：红果已不在包列表");
+  const finalState = JSON.parse(fs.readFileSync(adbState, "utf8"));
+  assert(!finalState.packages[HONGGUO_PACKAGE], "fake 设备上红果标准版已卸载");
+  assert(!!finalState.packages[HONGGUO_MPV_PACKAGE], "卸载标准版不影响 MPV 版: " + Object.keys(finalState.packages).join(","));
 
   consoleClient.close();
   console.log("\n✅ E2E-TV-DESKTOP 全部通过");

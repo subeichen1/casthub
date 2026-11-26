@@ -28,6 +28,8 @@
     tvDesktopInstalled: {},
     tvDesktopInstalledPending: null,
     tvDesktopAutoQueried: false,
+    tvDesktopAppId: null,
+    tvDesktopVariantId: null,
   };
 
   const tokenFromHash = new URLSearchParams(location.hash.replace(/^#/, "")).get("token");
@@ -96,6 +98,11 @@
     updateStatus: document.getElementById("updateStatus"),
     tvDesktopPanel: document.getElementById("tvDesktopPanel"),
     tvDesktopAdbStatus: document.getElementById("tvDesktopAdbStatus"),
+    tvDesktopIntro: document.getElementById("tvDesktopIntro"),
+    tvDesktopApp: document.getElementById("tvDesktopApp"),
+    tvDesktopVariantRow: document.getElementById("tvDesktopVariantRow"),
+    tvDesktopVariant: document.getElementById("tvDesktopVariant"),
+    tvDesktopAppNotice: document.getElementById("tvDesktopAppNotice"),
     tvDesktopDevice: document.getElementById("tvDesktopDevice"),
     tvDesktopMeta: document.getElementById("tvDesktopMeta"),
     tvDesktopInstallBtn: document.getElementById("tvDesktopInstallBtn"),
@@ -1039,12 +1046,24 @@
     return size + " B";
   }
 
+  function tvDesktopAppName() {
+    const info = state.tvDesktop;
+    return (info && info.appName) || "Aerial";
+  }
+
+  function tvDesktopInstallLabel(busy) {
+    if (busy) return "正在执行…";
+    const info = state.tvDesktop;
+    const kind = (info && info.installKind) || "launcher";
+    return kind === "launcher" ? "一键安装桌面" : "安装 " + tvDesktopAppName();
+  }
+
   function setTvDesktopBusy(busy) {
     state.tvDesktopBusy = !!busy;
     els.tvDesktopInstallBtn.disabled = !!busy;
     els.tvDesktopUninstallBtn.disabled = !!busy || !state.tvDesktop || !state.tvDesktop.adb || !state.tvDesktop.adb.available;
     els.tvDesktopRefreshBtn.disabled = !!busy;
-    els.tvDesktopInstallBtn.textContent = busy ? "正在执行…" : "一键安装桌面";
+    els.tvDesktopInstallBtn.textContent = tvDesktopInstallLabel(!!busy);
   }
 
   function selectedTvDesktopDeviceId() {
@@ -1057,6 +1076,8 @@
     const deviceId = selectedTvDesktopDeviceId();
     const payload = { type: "getDesktopInfo" };
     if (deviceId) payload.deviceId = deviceId;
+    if (state.tvDesktopAppId) payload.appId = state.tvDesktopAppId;
+    if (state.tvDesktopVariantId) payload.variantId = state.tvDesktopVariantId;
     if (force) payload.force = true;
     send(payload);
   }
@@ -1065,11 +1086,16 @@
     if (!deviceId || state.tvDesktopBusy) return;
     if (state.tvDesktopInstalled[deviceId]) return;
     state.tvDesktopInstalledPending = deviceId;
-    send({ type: "getDesktopInfo", deviceId: deviceId });
+    const payload = { type: "getDesktopInfo", deviceId: deviceId };
+    if (state.tvDesktopAppId) payload.appId = state.tvDesktopAppId;
+    if (state.tvDesktopVariantId) payload.variantId = state.tvDesktopVariantId;
+    send(payload);
   }
 
   function applyTvDesktopInfo(msg) {
     state.tvDesktop = msg;
+    if (msg.activeAppId) state.tvDesktopAppId = msg.activeAppId;
+    if (msg.variantId) state.tvDesktopVariantId = msg.variantId;
     const installed = msg.installed;
     if (installed && installed.deviceId) {
       state.tvDesktopInstalled[installed.deviceId] = installed;
@@ -1104,6 +1130,53 @@
       return;
     }
     els.tvDesktopPanel.hidden = false;
+
+    const apps = Array.isArray(info.apps) ? info.apps : [];
+    const appName = info.appName || "Aerial";
+    const installKind = info.installKind || "launcher";
+    if (apps.length) {
+      const previousApp = els.tvDesktopApp.value || state.tvDesktopAppId || info.activeAppId || apps[0].id;
+      els.tvDesktopApp.innerHTML = "";
+      apps.forEach(function (app) {
+        const option = document.createElement("option");
+        option.value = app.id;
+        option.textContent = app.name;
+        els.tvDesktopApp.appendChild(option);
+      });
+      const keepApp = apps.some(function (app) {
+        return app.id === previousApp;
+      });
+      els.tvDesktopApp.value = keepApp ? previousApp : apps[0].id;
+      const active = apps.find(function (app) {
+        return app.id === els.tvDesktopApp.value;
+      }) || apps[0];
+      const variants = Array.isArray(active.variants) ? active.variants : [];
+      const previousVariant = els.tvDesktopVariant.value || state.tvDesktopVariantId || info.variantId || active.defaultVariant;
+      els.tvDesktopVariant.innerHTML = "";
+      variants.forEach(function (variant) {
+        const option = document.createElement("option");
+        option.value = variant.id;
+        option.textContent = variant.name + (variant.id === active.defaultVariant ? "（推荐）" : "");
+        els.tvDesktopVariant.appendChild(option);
+      });
+      const keepVariant = variants.some(function (variant) {
+        return variant.id === previousVariant;
+      });
+      els.tvDesktopVariant.value = keepVariant ? previousVariant : active.defaultVariant;
+      els.tvDesktopVariantRow.hidden = variants.length <= 1;
+      els.tvDesktopIntro.textContent =
+        active.description +
+        (active.installKind === "launcher"
+          ? " 需要先在电视上开启 ADB 调试，安装后会接管 Home 键。"
+          : " 需要先在电视上开启 ADB 调试，安装后可在电视应用列表里打开。");
+      if (active.notice) {
+        els.tvDesktopAppNotice.textContent = active.notice;
+        els.tvDesktopAppNotice.hidden = false;
+      } else {
+        els.tvDesktopAppNotice.textContent = "";
+        els.tvDesktopAppNotice.hidden = true;
+      }
+    }
 
     const adb = info.adb || {};
     const adbOk = !!adb.available;
@@ -1150,7 +1223,7 @@
     if (info.release) {
       const release = info.release;
       addLine(
-        "Aerial",
+        appName,
         "v" +
           String(release.tag || "").replace(/^v/i, "") +
           " · " +
@@ -1159,20 +1232,20 @@
       );
       addLine("sha256", release.sha256 || "发布页未提供校验和");
     } else {
-      addLine("Aerial", info.releaseError || "无法获取最新版本信息");
+      addLine(appName, info.releaseError || "无法获取最新版本信息");
     }
 
     const deviceId = selectedTvDesktopDeviceId();
     const installed = deviceId ? state.tvDesktopInstalled[deviceId] : null;
     if (deviceId) {
       if (state.tvDesktopInstalledPending === deviceId) {
-        addLine("电视上的 Aerial", "正在读取…");
+        addLine("电视上的 " + appName, "正在读取…");
       } else if (installed && installed.error) {
-        addLine("电视上的 Aerial", installed.error);
+        addLine("电视上的 " + appName, installed.error);
       } else if (installed && !installed.installed) {
-        addLine("电视上的 Aerial", "未安装");
+        addLine("电视上的 " + appName, "未安装");
       } else if (installed) {
-        addLine("电视上的 Aerial", "v" + String(installed.version || ""));
+        addLine("电视上的 " + appName, "v" + String(installed.version || ""));
         if (installed.updateAvailable && info.release) {
           addLine(
             "可更新",
@@ -1187,6 +1260,12 @@
     if (deviceId && !installed && state.tvDesktopInstalledPending !== deviceId) {
       queryTvDesktopInstalled(deviceId);
     }
+    els.tvDesktopInstallBtn.textContent = state.tvDesktopBusy
+      ? "正在执行…"
+      : installKind === "launcher"
+        ? "一键安装桌面"
+        : "安装 " + appName;
+    els.tvDesktopUninstallBtn.textContent = installKind === "launcher" ? "还原原桌面" : "卸载 " + appName;
   }
 
   function renderTvDesktopStep(step) {
@@ -1278,17 +1357,29 @@
         setTvDesktopStatus(state.tvDesktop && state.tvDesktop.adb ? state.tvDesktop.adb.hint : "adb 不可用", true);
         return;
       }
-      if (!window.confirm("即将在「" + (target.name || target.ip) + "」上安装 Aerial 桌面并接管 Home 键，确定继续？")) {
+      const info = state.tvDesktop || {};
+      const appName = info.appName || "Aerial";
+      const isLauncher = (info.installKind || "launcher") === "launcher";
+      const variantName = info.variantName ? "（" + info.variantName + "）" : "";
+      if (
+        !window.confirm(
+          isLauncher
+            ? "即将在「" + (target.name || target.ip) + "」上安装 " + appName + " 并接管 Home 键，确定继续？"
+            : "即将在「" + (target.name || target.ip) + "」上安装 " + appName + variantName + "，确定继续？",
+        )
+      ) {
         return;
       }
       const payload = { type: "installDesktop", deviceId: target.deviceId };
+      if (info.activeAppId) payload.appId = info.activeAppId;
+      if (info.variantId) payload.variantId = info.variantId;
       const customUrl = els.tvDesktopCustomUrl.value.trim();
       if (customUrl) payload.apkUrl = customUrl;
       const release = state.tvDesktop && state.tvDesktop.release;
       if (customUrl || (release && !release.sha256)) {
         if (
           !window.confirm(
-            "当前 Aerial 安装包未提供 SHA-256 校验值，无法验证下载完整性。请确认下载来源可信，是否继续？",
+            "当前 " + appName + " 安装包未提供 SHA-256 校验值，无法验证下载完整性。请确认下载来源可信，是否继续？",
           )
         ) {
           return;
@@ -1312,12 +1403,26 @@
         showToast("请先选择目标电视", true);
         return;
       }
-      if (!window.confirm("将卸载 Aerial 并尝试恢复原厂桌面，确定继续？")) return;
+      const info = state.tvDesktop || {};
+      const appName = info.appName || "Aerial";
+      const isLauncher = (info.installKind || "launcher") === "launcher";
+      if (
+        !window.confirm(
+          isLauncher
+            ? "将卸载 " + appName + " 并尝试恢复原厂桌面，确定继续？"
+            : "将卸载 " + appName + "，确定继续？",
+        )
+      ) {
+        return;
+      }
       els.tvDesktopStepsWrap.hidden = true;
       setTvDesktopBusy(true);
-      setTvDesktopStatus("正在还原…", false);
+      setTvDesktopStatus(isLauncher ? "正在还原…" : "正在卸载…", false);
       setTvDesktopProgress(0);
-      if (!send({ type: "uninstallDesktop", deviceId: target.deviceId })) {
+      const uninstallPayload = { type: "uninstallDesktop", deviceId: target.deviceId };
+      if (info.activeAppId) uninstallPayload.appId = info.activeAppId;
+      if (info.variantId) uninstallPayload.variantId = info.variantId;
+      if (!send(uninstallPayload)) {
         setTvDesktopBusy(false);
         setTvDesktopProgress(null);
       }
@@ -1329,6 +1434,26 @@
 
     els.tvDesktopDevice.addEventListener("change", function () {
       renderTvDesktop();
+    });
+
+    // 切换应用/变体：已装版本要重新查（同一台电视上装的是另一个包）。
+    els.tvDesktopApp.addEventListener("change", function () {
+      state.tvDesktopAppId = els.tvDesktopApp.value || null;
+      state.tvDesktopVariantId = null;
+      state.tvDesktopInstalled = {};
+      state.tvDesktopInstalledPending = null;
+      state.tvDesktopAutoQueried = true;
+      renderTvDesktop();
+      requestTvDesktopInfo(false);
+    });
+
+    els.tvDesktopVariant.addEventListener("change", function () {
+      state.tvDesktopVariantId = els.tvDesktopVariant.value || null;
+      state.tvDesktopInstalled = {};
+      state.tvDesktopInstalledPending = null;
+      state.tvDesktopAutoQueried = true;
+      renderTvDesktop();
+      requestTvDesktopInfo(false);
     });
 
     els.tvDesktopPlatformToolsBtn.addEventListener("click", function () {

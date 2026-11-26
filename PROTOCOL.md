@@ -35,16 +35,16 @@
 | 控制台→中枢 | queuePlay | {deviceId}（开始或继续该设备队列；空队列返回 error） |
 | 控制台→中枢 | queueRemove | {deviceId, index}（当前播放项返回 error，需先停止） |
 | 控制台→中枢 | queueClear | {deviceId}（正在播放时先停止，再清空队列） |
-| 控制台→中枢 | getDesktopInfo | {deviceId?, force?}（电视助手：adb 状态、Aerial 最新版本、可选电视列表；deviceId 指定时额外读取该电视已装版本，force=true 绕过 10 分钟发布缓存） |
-| 控制台→中枢 | installDesktop | {deviceId, apkUrl?}（在目标电视上安装 Aerial 桌面并接管 Home；apkUrl 仅 https，缺省用 GitHub 最新正式版） |
-| 控制台→中枢 | uninstallDesktop | {deviceId}（卸载 Aerial 并执行通用还原步骤） |
+| 控制台→中枢 | getDesktopInfo | {deviceId?, force?, appId?, variantId?}（电视助手：adb 状态、应用目录、所选应用最新版本、可选电视列表；deviceId 指定时额外读取该电视已装版本，force=true 绕过 10 分钟发布缓存；appId 缺省 aerial，variantId 缺省为该应用的默认变体） |
+| 控制台→中枢 | installDesktop | {deviceId, apkUrl?, appId?, variantId?}（在目标电视上安装所选应用：aerial 会接管 Home 并执行官方可选步骤，hongguo 只做普通应用安装；apkUrl 仅 https，缺省用该应用 GitHub 最新正式版） |
+| 控制台→中枢 | uninstallDesktop | {deviceId, appId?, variantId?}（卸载所选应用：aerial 执行通用还原步骤，普通应用只 force-stop + uninstall） |
 | 中枢→控制台 | devices | {list: [{id, address, online, type: "casthub"\|"dlna", deviceName, volume?}]}（DLNA 音量 0-100；null/缺省表示不支持） |
 | 中枢→控制台 | tvStatus | {deviceId, state, positionMs, durationMs, volume?}（历史由中枢内部消费） |
 | 中枢→控制台 | history | {list: [{path, name, positionMs, durationMs, updatedAt, playCount, lastDeviceId}]}（updatedAt 倒序，最多 200 条） |
 | 中枢→控制台 | queue | {deviceId, queue: {items: [{path, name}], currentIndex, state: "idle"\|"playing"\|"switching"\|"paused"\|"completed", playing, error?}}（连接建立时下发已有队列，变化时广播；currentIndex 未开始为 -1） |
-| 中枢→控制台 | desktopInfo | {adb: {available, path, version, source: "env"\|"local"\|"path"\|"missing", hint}, release: {tag, apkName, apkUrl, sizeBytes, sha256, publishedAt, channel: "github"\|"mirror"\|"custom"} \| null, releaseError, targets: [{deviceId, name, address, ip, kind}], cacheDir, busy, packageName, platformToolsUrl, installed?: {deviceId, installed, version, updateAvailable, error}} |
+| 中枢→控制台 | desktopInfo | {adb: {available, path, version, source: "env"\|"local"\|"path"\|"missing", hint}, release: {appId, variantId, packageName, tag, version, apkName, apkUrl, sizeBytes, sha256, publishedAt, channel: "github"\|"mirror"\|"custom"} \| null, releaseError, targets: [{deviceId, name, address, ip, kind}], apps: [{id, name, vendor, description, installKind: "launcher"\|"app", defaultVariant, variants: [{id, name, description, packageName, minSdk}]}], activeAppId, appName, variantId, variantName, installKind, cacheDir, busy, packageName, platformToolsUrl, installed?: {deviceId, appId, variantId, packageName, installed, version, updateAvailable, error}}（packageName 为当前所选变体的包名，兼容旧字段） |
 | 中枢→控制台 | desktopProgress | {action: "install"\|"uninstall", percent}（安装阶段下载 APK 时上报 0-100） |
-| 中枢→控制台 | desktopResult | {action: "install"\|"uninstall", ok, message, steps: [{key, title, command, ok, required, output}], verification: {homeLauncher, accessibility, focus, detail} \| null, release} |
+| 中枢→控制台 | desktopResult | {action: "install"\|"uninstall", ok, message, appId, variantId, packageName, steps: [{key, title, command, ok, required, output}], verification: {homeLauncher, accessibility, focus, detail} \| null, release} |
 | 中枢→控制台 | error | {message} |
 
 ## 播放历史与断点续播（协议增量）
@@ -75,16 +75,20 @@
 - 手动 `control` 的 `stop` 只停止当前播放并保留队列为 `paused`，不会触发自动下一项；之后的 `queuePlay` 从当前项从头播放。`queueRemove` 不允许移除当前播放项；`queueClear` 会先停止当前播放再清空。
 - 队列内的每一项仍独立走现有 DLNA 字幕准备流程，任何时刻最多只输出一条字幕。
 
-## 电视助手（Aerial 桌面，协议增量）
+## 电视助手（应用目录，协议增量）
 
+- 应用目录固定为两项，由服务端常量维护（不来自网络）：`aerial`（Aerial 极简桌面，`installKind: "launcher"`，单变体 `standard` → `app.orchard.tv`）与 `hongguo`（红果短剧 TV，`installKind: "app"`，三变体 `standard` → `rocks.aston.hongguotv`、`mpv` → `rocks.aston.hongguotv.mpv`、`android5` → `rocks.aston.hongguotv.android5test`）。请求里的 `appId` 缺省为 `aerial`，`variantId` 缺省为该应用的 `defaultVariant`；未知 `appId` 回退 `aerial`，未知 `variantId` 回退默认变体。`installKind` 决定安装/卸载走哪套 adb 步骤与验收。
 - 目标电视只能来自现有设备列表（`devices`），中枢从设备地址解析 IP（casthub 为 `ws://ip:9417`，DLNA 为 LOCATION URL），串口统一为 `<ip>:5555`；不新增手工 IP 输入。
-- `getDesktopInfo` 每次实时探测 adb（顺序：`CASTHUB_ADB_PATH`/`ADB_PATH` → `%LOCALAPPDATA%\CastHub\platform-tools` → `PATH`）并查询 Aerial 最新正式版（GitHub Releases API，10 分钟缓存；失败回退官网镜像直链，此时 `sha256` 为 null、`channel` 为 `mirror`）。`busy` 为 true 时拒绝新的安装/还原请求。
-- `installDesktop` 流程：解析版本 → 下载 APK 到 `data/cache/tv-desktop`（仅 https 或本机 `file://`，>64 MB 拒绝，发布页提供 `sha256` 时强校验，写 `.part` 后原子重命名）→ `adb connect <ip>:5555` → `get-state` → `install -r`（三条必需）→ 官方可选步骤（`pm grant`、`appops`、`cmd notification allow_listener`、`am start`、`cmd package compile`）。任何必需步骤失败立即中止并返回已执行步骤明细。
-- 安装后验收三条：默认 HOME（`cmd package resolve-activity -a android.intent.action.MAIN -c android.intent.category.HOME`）、无障碍服务包含 `app.orchard.tv/.guard.HomeGuardService`、`dumpsys window` 的 `mCurrentFocus` 属于 Aerial。未接管默认桌面时 `ok` 仍为 true，但 `message` 提示手动设置默认桌面。
-- `uninstallDesktop` 执行最小还原：`am broadcast` 关闭 keep_adb、`cmd notification disallow_listener`、`pm revoke`、6 条 `appops set … default`、`am force-stop`、从 `enabled_accessibility_services` 剔除 Aerial、`cmd role remove-role-holder --user 0 android.app.role.HOME app.orchard.tv`，最后 `uninstall`。海信/TCL/小米等品牌定制项不在通用还原范围内，控制台给出官方 `restore.sh` 命令供手动执行。
-- 已装版本：`getDesktopInfo` 带 `deviceId` 时，中枢会 `adb connect` 后执行 `adb -s <ip>:5555 shell dumpsys package app.orchard.tv`，解析 `versionName` 得到电视上已装版本，并在响应里附 `installed: {deviceId, installed, version, updateAvailable, error}`。`updateAvailable` 仅在「发布页为 GitHub 渠道（有版本号）且语义化比较高于已装版本」时为 true；镜像渠道或版本号不可解析时不提示更新。查询失败只写入 `error`，不影响面板其余信息，也不影响安装。不带 `deviceId` 时不做这次 adb 查询。
-- 刷新与缓存：`force: true` 跳过 10 分钟发布信息缓存并重新请求 GitHub Releases API（控制台「刷新」按钮使用）。面板本身不会自动升级已装 Aerial，重新点「一键安装桌面」即为升级（`install -r`）。
-- Aerial 为第三方开源项目（MIT，`pengchujin/aerial-tv`），安装包不随 CastHub 分发；CastHub 只提供下载地址与 adb 命令模板。电视端 App（tv-app）无任何改动。
+- `getDesktopInfo` 每次实时探测 adb（顺序：`CASTHUB_ADB_PATH`/`ADB_PATH` → `%LOCALAPPDATA%\CastHub\platform-tools` → `PATH`）并查询所选应用所选变体的最新正式版（GitHub Releases API，缓存 10 分钟，按 `appId:variantId` 分槽）。Aerial 失败时回退官网镜像直链（`sha256` 为 null、`channel` 为 `mirror`）；红果无镜像，失败只写 `releaseError`。`busy` 为 true 时拒绝新的安装/卸载请求。
+- 资产名按变体模板解析：Aerial 固定 `aerial-standard.apk`；红果为 `hongguo-tv-<version>.apk`、`hongguo-tv-mpv-<version>.apk`、`hongguo-tv-android5-<version>.apk`，`version` 取 tag 去掉前缀 `v`。只接受精确资产名（无版本号时退化为 `前缀 + .apk`），`digest` 形如 `sha256:<64 hex>` 时作为 `sha256`，下载地址必须是 https。
+- 发布信息可用环境变量注入以跳过 GitHub：`AERIAL_RELEASE_JSON` / `HONGGUO_RELEASE_JSON` 指向本地 JSON 文件，字段 `{apkUrl, tag?, apkName?, sizeBytes?, sha256?, publishedAt?, variant?}`；红果的 `variant` 存在时只对该变体生效，不匹配则报错，不会串用别的变体的安装包。
+- `installDesktop` 公共流程：解析版本 → 下载 APK 到 `data/cache/tv-desktop`（仅 https 或本机 `file://`，>64 MB 拒绝，发布页提供 `sha256` 时强校验，写 `.part` 后原子重命名，缓存名 `aerial-<tag>-<urlHash16>.apk` 或 `<appId>-<variantId>-<tag>-<urlHash16>.apk`）→ `adb connect <ip>:5555` → `get-state` → `install -r`（三条必需）。任何必需步骤失败立即中止并返回已执行步骤明细。
+- `installKind: "launcher"`（Aerial）在三条必需步骤后追加官方可选步骤（`pm grant`、`appops`、`cmd notification allow_listener`、`am start`、`cmd package compile`），验收三条：默认 HOME（`cmd package resolve-activity -a android.intent.action.MAIN -c android.intent.category.HOME`）、无障碍服务包含 `app.orchard.tv/.guard.HomeGuardService`、`dumpsys window` 的 `mCurrentFocus` 属于 Aerial。未接管默认桌面时 `ok` 仍为 true，但 `message` 提示手动设置默认桌面。
+- `installKind: "app"`（红果）只有两条可选步骤：`am start -n <activity>` 与 `cmd package compile -m speed -f <packageName>`；不申请桌面角色、不写无障碍、不设置 appops。验收两条：`pm list packages <packageName>` 里出现该包（按行精确匹配，避免 `rocks.aston.hongguotv` 误匹配 `.mpv` 变体），`dumpsys window` 的 `mCurrentFocus` 属于该包；`verification.accessibility` 恒为 false（该应用不涉及无障碍）。
+- `uninstallDesktop`：`launcher` 执行最小还原（`am broadcast` 关闭 keep_adb、`cmd notification disallow_listener`、`pm revoke`、6 条 `appops set … default`、`am force-stop`、从 `enabled_accessibility_services` 剔除 Aerial、`cmd role remove-role-holder --user 0 android.app.role.HOME app.orchard.tv`，最后 `uninstall`）；`app` 只做 `am force-stop` + `uninstall`。海信/TCL/小米等品牌定制项不在通用还原范围内，控制台给出官方 `restore.sh` 命令供手动执行。
+- 已装版本：`getDesktopInfo` 带 `deviceId` 时，中枢会 `adb connect` 后执行 `adb -s <ip>:5555 shell dumpsys package <packageName>`，解析 `versionName`，在响应里附 `installed: {deviceId, appId, variantId, packageName, installed, version, updateAvailable, error}`。`updateAvailable` 仅在「发布页为 GitHub 渠道（有版本号）且语义化比较高于已装版本」时为 true；镜像渠道或版本号不可解析时不提示更新。查询失败只写入 `error`，不影响面板其余信息，也不影响安装。不带 `deviceId` 时不做这次 adb 查询。红果三个变体包名独立，分别查询，互不影响。
+- 刷新与缓存：`force: true` 跳过 10 分钟发布信息缓存并重新请求 GitHub Releases API（控制台「刷新」按钮使用）。面板本身不会自动升级已装应用，重新点安装按钮即为升级（`install -r`）。
+- Aerial 为第三方开源项目（MIT，`pengchujin/aerial-tv`），红果短剧 TV 为第三方应用（发布仓库 `aston314/hongguo-tv-releases`），安装包均不随 CastHub 分发；CastHub 只提供下载地址与 adb 命令模板。电视端 App（tv-app）无任何改动。
 
 ## REST
 

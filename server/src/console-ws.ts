@@ -707,7 +707,9 @@ export function attachConsoleWs(
             try {
               const info = await options.tvDesktop.info(allDevices(), {
                 force: msg.force === true,
-                deviceId: msg.deviceId === undefined ? undefined : String(msg.deviceId)
+                deviceId: msg.deviceId === undefined ? undefined : String(msg.deviceId),
+                appId: msg.appId === undefined ? undefined : String(msg.appId),
+                variantId: msg.variantId === undefined ? undefined : String(msg.variantId)
               });
               sendJson(ws, { type: "desktopInfo", ...info });
             } catch (error) {
@@ -726,6 +728,8 @@ export function attachConsoleWs(
               const result = await options.tvDesktop.install(allDevices(), deviceId, {
                 apkUrl,
                 allowUnverified: msg.allowUnverified === true,
+                appId: msg.appId === undefined ? undefined : String(msg.appId),
+                variantId: msg.variantId === undefined ? undefined : String(msg.variantId),
                 onProgress: (percent) => {
                   sendJson(ws, { type: "desktopProgress", action: "install", percent });
                 }
@@ -744,7 +748,10 @@ export function attachConsoleWs(
             }
             const deviceId = String(msg.deviceId ?? "");
             try {
-              const result = await options.tvDesktop.uninstall(allDevices(), deviceId);
+              const result = await options.tvDesktop.uninstall(allDevices(), deviceId, {
+                appId: msg.appId === undefined ? undefined : String(msg.appId),
+                variantId: msg.variantId === undefined ? undefined : String(msg.variantId)
+              });
               sendJson(ws, { type: "desktopResult", ...result });
               console.log(`[console] 电视助手还原 ${result.ok ? "成功" : "失败"}: ${result.message}`);
             } catch (error) {
