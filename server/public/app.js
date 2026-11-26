@@ -1489,6 +1489,8 @@
     els.tvDesktopApp.addEventListener("change", function () {
       state.tvDesktopAppId = els.tvDesktopApp.value || null;
       state.tvDesktopVariantId = null;
+      // 换应用后变体下拉要回到「自动匹配」，否则会沿用上一个应用选中的变体 id。
+      els.tvDesktopVariant.value = "";
       state.tvDesktopInstalled = {};
       state.tvDesktopInstalledPending = null;
       state.tvDesktopAutoQueried = true;
