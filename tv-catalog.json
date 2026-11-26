@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-11-26T11:48:06.323Z",
+  "mirrors": [],
+  "apps": {
+    "aerial": {
+      "repo": "pengchujin/aerial-tv",
+      "tag_name": "v2.20",
+      "published_at": "2026-11-26T01:30:52Z",
+      "assets": [
+        {
+          "name": "aerial-guard.apk",
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-guard.apk",
+          "size": 3246371,
+          "digest": "sha256:9afd75a95211595cea72ca790044a959fa4251105c31cdfab877a8b911037bd1"
+        },
+        {
+          "name": "aerial-lite.apk",
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-lite.apk",
+          "size": 1013379,
+          "digest": "sha256:5fb001a13dc7e3c6908d73d0694b8b177d2257687b76974f422c889aafe78bcd"
+        },
+        {
+          "name": "aerial-standard.apk",
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-standard.apk",
+          "size": 3246616,
+          "digest": "sha256:1895bbf36c05fb0c8537699e3493fd578d5ded1a1108d2530c2279184d5692c9"
+        }
+      ]
+    },
+    "hongguo": {
+      "repo": "aston314/hongguo-tv-releases",
+      "tag_name": "v0.2.183",
+      "published_at": "2026-11-26T06:30:29Z",
+      "assets": [
+        {
+          "name": "hongguo-tv-0.2.183.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-0.2.183.apk",
+          "size": 30611265,
+          "digest": "sha256:5bfea8b8493e8f879acf5607f39a4f1206abee845929db54d2f35a3de08e13f0"
+        },
+        {
+          "name": "hongguo-tv-android5-0.2.183.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-android5-0.2.183.apk",
+          "size": 30616109,
+          "digest": "sha256:5983d561d0aadc9197a1eddc4fc2cff0596fc91b78d2692424b52b1ec7dc73a2"
+        },
+        {
+          "name": "hongguo-tv-mpv-0.2.183.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-mpv-0.2.183.apk",
+          "size": 48576268,
+          "digest": "sha256:456b4a62b79647b52aa336728a4d68722868e4cb8d415297c80c5defc9c48187"
+        }
+      ]
+    },
+    "tvbox": {
+      "repo": "j4Uq/TVBoxOSC",
+      "tag_name": "20261111-1518",
+      "published_at": "2026-11-12T02:09:51Z",
+      "assets": [
+        {
+          "name": "TVBox_q215613905_20261111-1518-java.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-java.apk",
+          "size": 33313736,
+          "digest": "sha256:07bf47dff8e23312876eb02b0ca112ee66664bd0c9fb7f2a7313d5ec03e634be"
+        },
+        {
+          "name": "TVBox_q215613905_20261111-1518-java32.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-java32.apk",
+          "size": 19814778,
+          "digest": "sha256:505f7f7dfb3530c07e6983a702c08e2172c0ecf4a68a0ff9ef24e7071118ee8f"
+        },
+        {
+          "name": "TVBox_q215613905_20261111-1518-java64.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-java64.apk",
+          "size": 20776169,
+          "digest": "sha256:c3aee40419fe9cef88dbac99aa7aff6e26503f8fb5e3dd1dd07e46e8e28b3c02"
+        },
+        {
+          "name": "TVBox_q215613905_20261111-1518-python.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-python.apk",
+          "size": 52634983,
+          "digest": "sha256:1adee006a723503d2fb67b58612f49fdb82866a3871baa50475209a330226de9"
+        },
+        {
+          "name": "TVBox_q215613905_20261111-1518-python32.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-python32.apk",
+          "size": 31616095,
+          "digest": "sha256:1d8b152cb0b719f90d221be44acc65791f75328a8787149a237ef418938e8e44"
+        },
+        {
+          "name": "TVBox_q215613905_20261111-1518-python64.apk",
+          "browser_download_url": "https://github.com/j4Uq/TVBoxOSC/releases/download/20261111-1518/TVBox_q215613905_20261111-1518-python64.apk",
+          "size": 33063122,
+          "digest": "sha256:2272e34a3ae290f8e85df252d4838917a5e1b26b242e619112d4ed8042e5a3e8"
+        }
+      ]
+    }
+  }
+}
