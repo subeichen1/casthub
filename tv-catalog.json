@@ -1,55 +1,55 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-26T11:48:06.323Z",
+  "generatedAt": "2026-11-27T06:02:19.971Z",
   "mirrors": [],
   "apps": {
     "aerial": {
       "repo": "pengchujin/aerial-tv",
-      "tag_name": "v2.20",
-      "published_at": "2026-11-26T01:30:52Z",
+      "tag_name": "v2.21",
+      "published_at": "2026-11-27T02:07:38Z",
       "assets": [
         {
           "name": "aerial-guard.apk",
-          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-guard.apk",
-          "size": 3246371,
-          "digest": "sha256:9afd75a95211595cea72ca790044a959fa4251105c31cdfab877a8b911037bd1"
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.21/aerial-guard.apk",
+          "size": 3247342,
+          "digest": "sha256:2c329330aa08bc7018ec03d9062fd8b912bdc00b6ae359d53487a5d568d7e884"
         },
         {
           "name": "aerial-lite.apk",
-          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-lite.apk",
-          "size": 1013379,
-          "digest": "sha256:5fb001a13dc7e3c6908d73d0694b8b177d2257687b76974f422c889aafe78bcd"
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.21/aerial-lite.apk",
+          "size": 1013452,
+          "digest": "sha256:0685bb57d99a1b900bccb0fc23de28df6a9e4bfb62119de68583e7023b741ccb"
         },
         {
           "name": "aerial-standard.apk",
-          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.20/aerial-standard.apk",
-          "size": 3246616,
-          "digest": "sha256:1895bbf36c05fb0c8537699e3493fd578d5ded1a1108d2530c2279184d5692c9"
+          "browser_download_url": "https://github.com/pengchujin/aerial-tv/releases/download/v2.21/aerial-standard.apk",
+          "size": 3247531,
+          "digest": "sha256:81b69c392e43efa24845e13aad2668d3315a110615a4bb2e51d4a69d177b8dd3"
         }
       ]
     },
     "hongguo": {
       "repo": "aston314/hongguo-tv-releases",
-      "tag_name": "v0.2.183",
-      "published_at": "2026-11-26T06:30:29Z",
+      "tag_name": "v0.2.184",
+      "published_at": "2026-11-26T23:38:23Z",
       "assets": [
         {
-          "name": "hongguo-tv-0.2.183.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-0.2.183.apk",
-          "size": 30611265,
-          "digest": "sha256:5bfea8b8493e8f879acf5607f39a4f1206abee845929db54d2f35a3de08e13f0"
+          "name": "hongguo-tv-0.2.184.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-0.2.184.apk",
+          "size": 31001185,
+          "digest": "sha256:09a3a367c19356f6270680c62bf03522f2ddb7dba393d3fe170dbbfb586ce397"
         },
         {
-          "name": "hongguo-tv-android5-0.2.183.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-android5-0.2.183.apk",
-          "size": 30616109,
-          "digest": "sha256:5983d561d0aadc9197a1eddc4fc2cff0596fc91b78d2692424b52b1ec7dc73a2"
+          "name": "hongguo-tv-android5-0.2.184.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-android5-0.2.184.apk",
+          "size": 31006244,
+          "digest": "sha256:d4986e8083f985d0b0dd9cc1f41e11dcb6286d7186d0ed2a09946f79df560a4d"
         },
         {
-          "name": "hongguo-tv-mpv-0.2.183.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.183/hongguo-tv-mpv-0.2.183.apk",
-          "size": 48576268,
-          "digest": "sha256:456b4a62b79647b52aa336728a4d68722868e4cb8d415297c80c5defc9c48187"
+          "name": "hongguo-tv-mpv-0.2.184.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-mpv-0.2.184.apk",
+          "size": 48966183,
+          "digest": "sha256:b0a66c626617c7d214e762ff2f1f097a83df39ea83358f1e273764a5b8b4b5ec"
         }
       ]
     },
