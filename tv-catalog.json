@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-27T06:02:19.971Z",
+  "generatedAt": "2026-11-28T02:25:56.832Z",
   "mirrors": [],
   "apps": {
     "aerial": {
@@ -30,26 +30,26 @@
     },
     "hongguo": {
       "repo": "aston314/hongguo-tv-releases",
-      "tag_name": "v0.2.184",
-      "published_at": "2026-11-26T23:38:23Z",
+      "tag_name": "v0.2.185",
+      "published_at": "2026-11-28T01:59:54Z",
       "assets": [
         {
-          "name": "hongguo-tv-0.2.184.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-0.2.184.apk",
-          "size": 31001185,
-          "digest": "sha256:09a3a367c19356f6270680c62bf03522f2ddb7dba393d3fe170dbbfb586ce397"
+          "name": "hongguo-tv-0.2.185.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.185/hongguo-tv-0.2.185.apk",
+          "size": 31034000,
+          "digest": "sha256:1f9b28bb9d61bd296bfe4b6082a92a9ebb33f56d9893cfd4c81127a4aa28670d"
         },
         {
-          "name": "hongguo-tv-android5-0.2.184.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-android5-0.2.184.apk",
-          "size": 31006244,
-          "digest": "sha256:d4986e8083f985d0b0dd9cc1f41e11dcb6286d7186d0ed2a09946f79df560a4d"
+          "name": "hongguo-tv-android5-0.2.185.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.185/hongguo-tv-android5-0.2.185.apk",
+          "size": 31039702,
+          "digest": "sha256:83ceac803fd0ea9be65756df5f2fad394f52f41e3968cae1d6476199e57cc205"
         },
         {
-          "name": "hongguo-tv-mpv-0.2.184.apk",
-          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.184/hongguo-tv-mpv-0.2.184.apk",
-          "size": 48966183,
-          "digest": "sha256:b0a66c626617c7d214e762ff2f1f097a83df39ea83358f1e273764a5b8b4b5ec"
+          "name": "hongguo-tv-mpv-0.2.185.apk",
+          "browser_download_url": "https://github.com/aston314/hongguo-tv-releases/releases/download/v0.2.185/hongguo-tv-mpv-0.2.185.apk",
+          "size": 48999021,
+          "digest": "sha256:308e873b41ed05c39e8ee402ef3a43ea782c4356f1ecc22879ef9d54214a34e8"
         }
       ]
     },
